@@ -1,0 +1,6 @@
+{
+  "name": "QuincaStock - Gestion Quincaillerie Pro",
+  "description": "Application simple et robuste pour gérer les stocks, achats et ventes d'une quincaillerie au Cameroun.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
