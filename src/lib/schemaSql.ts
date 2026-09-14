@@ -1,4 +1,6 @@
--- ==========================================================
+// Export complete Supabase SQL Schema for easy copy-paste & validation in UI
+
+export const SUPABASE_SQL_SCRIPT = `-- ==========================================================
 -- QUINCASTOCK - SCHÉMA DE BASE DE DONNÉES SUPABASE (VERSION 2)
 -- Gestion Quincaillerie Pro avec Sauvegarde Cloud et RLS
 -- ==========================================================
@@ -18,7 +20,6 @@ create table if not exists public.profiles (
   created_at timestamptz default now()
 );
 
--- Index pour recherche rapide par user_id
 create index if not exists idx_profiles_user_id on public.profiles(user_id);
 
 -- 3. TABLE PRODUCTS
@@ -33,7 +34,6 @@ create table if not exists public.products (
   updated_at timestamptz default now()
 );
 
--- Index pour recherche rapide des produits de l'utilisateur
 create index if not exists idx_products_user_id on public.products(user_id);
 create index if not exists idx_products_name on public.products(name);
 
@@ -50,7 +50,6 @@ create table if not exists public.movements (
   created_at timestamptz default now()
 );
 
--- Index pour mouvements
 create index if not exists idx_movements_user_id on public.movements(user_id);
 create index if not exists idx_movements_created_at on public.movements(created_at desc);
 
@@ -145,7 +144,7 @@ create policy "Les utilisateurs créent uniquement leurs mouvements"
   on public.movements for insert 
   with check (auth.uid() = user_id);
 
--- Politiques RLS : PRO_CODES (Lecture publique ou authentifiée pour vérification de validité)
+-- Politiques RLS : PRO_CODES
 drop policy if exists "Lecture des codes pro" on public.pro_codes;
 create policy "Lecture des codes pro" 
   on public.pro_codes for select 
@@ -174,34 +173,28 @@ begin
     return jsonb_build_object('success', false, 'status', 'UNAUTHENTICATED', 'message', 'Vous devez être connecté.');
   end if;
 
-  -- 1. Vérifier si l'utilisateur est déjà PRO
   select is_pro into v_is_already_pro from public.profiles where user_id = v_user_id;
   if v_is_already_pro is true then
     return jsonb_build_object('success', false, 'status', 'ALREADY_PRO', 'message', '⭐ Votre compte QuincaStock PRO est déjà activé.');
   end if;
 
-  -- 2. Nettoyer le code
   v_clean_code := upper(trim(p_code));
 
-  -- 3. Vérifier l'existence du code
   select * into v_code_record from public.pro_codes where code = v_clean_code;
   if v_code_record.id is null then
     return jsonb_build_object('success', false, 'status', 'INVALID_CODE', 'message', '❌ Code PRO invalide.');
   end if;
 
-  -- 4. Vérifier si le code est déjà utilisé
   if v_code_record.is_used is true then
     return jsonb_build_object('success', false, 'status', 'ALREADY_USED', 'message', '❌ Ce code PRO a déjà été utilisé.');
   end if;
 
-  -- 5. Marquer le code comme utilisé (atomic update)
   update public.pro_codes
   set is_used = true,
       used_by = v_user_id,
       used_at = now()
   where id = v_code_record.id and is_used = false;
 
-  -- 6. Activer le statut PRO sur le profil
   update public.profiles
   set is_pro = true
   where user_id = v_user_id;
@@ -238,3 +231,14 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+`;
+
+export function getSupabaseProjectRef(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.hostname.split('.');
+    return parts[0] || '';
+  } catch {
+    return '';
+  }
+}

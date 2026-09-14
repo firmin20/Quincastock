@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
 export const isSupabaseConfigured = (): boolean => {
   return Boolean(
@@ -13,7 +13,13 @@ export const isSupabaseConfigured = (): boolean => {
   );
 };
 
-// If valid keys are provided, initialize real client. Otherwise fallback gracefully.
+export const getSupabaseConfig = () => ({
+  url: supabaseUrl,
+  anonKey: supabaseAnonKey,
+  configured: isSupabaseConfigured(),
+});
+
+// If valid credentials are provided, initialize client with auto-refresh and persistent storage
 export const supabase = isSupabaseConfigured()
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {

@@ -1,13 +1,7 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, getSupabaseConfig } from '../lib/supabase';
 import { Product, Movement, UserProfile } from '../types';
 import { VALID_PRO_CODES } from '../utils/formatters';
-
-// Cloud simulation keys for offline/preview fallback
-const CLOUD_STORAGE_KEYS = {
-  USERS: 'quinca_cloud_users_v2',
-  SESSION: 'quinca_cloud_session_v2',
-  CODES: 'quinca_cloud_codes_v2',
-};
+import { getSupabaseProjectRef } from '../lib/schemaSql';
 
 export interface AuthResponse {
   success: boolean;
@@ -16,6 +10,7 @@ export interface AuthResponse {
     email: string;
     profile: UserProfile;
   };
+  needsEmailConfirmation?: boolean;
   error?: string;
   message?: string;
 }
@@ -26,40 +21,94 @@ export interface ProActivationResponse {
   message: string;
 }
 
-// Initial fixed 15 PRO codes for cloud simulator
-function getInitialCloudCodes(): Record<string, { isUsed: boolean; usedBy?: string; usedAt?: string }> {
-  const initial: Record<string, { isUsed: boolean; usedBy?: string; usedAt?: string }> = {};
-  for (const c of VALID_PRO_CODES) {
-    initial[c] = { isUsed: false };
-  }
-  return initial;
-}
-
-function getStoredCloudCodes(): Record<string, { isUsed: boolean; usedBy?: string; usedAt?: string }> {
-  try {
-    const raw = localStorage.getItem(CLOUD_STORAGE_KEYS.CODES);
-    if (!raw) {
-      const initial = getInitialCloudCodes();
-      localStorage.setItem(CLOUD_STORAGE_KEYS.CODES, JSON.stringify(initial));
-      return initial;
-    }
-    return JSON.parse(raw);
-  } catch {
-    return getInitialCloudCodes();
-  }
-}
-
-function saveStoredCloudCodes(codes: Record<string, { isUsed: boolean; usedBy?: string; usedAt?: string }>): void {
-  try {
-    localStorage.setItem(CLOUD_STORAGE_KEYS.CODES, JSON.stringify(codes));
-  } catch (err) {
-    console.error('Erreur sauvegarde codes cloud:', err);
-  }
+export interface SupabaseHealthReport {
+  isConfigured: boolean;
+  url: string;
+  projectRef: string;
+  tables: {
+    profiles: boolean;
+    products: boolean;
+    movements: boolean;
+    pro_codes: boolean;
+  };
+  proCodesCount: number;
+  allTablesExist: boolean;
+  error?: string;
 }
 
 export const cloudService = {
   // ==========================================
-  // AUTHENTIFICATION
+  // DIAGNOSTIC DE CONNEXION SUPABASE
+  // ==========================================
+
+  async checkHealth(): Promise<SupabaseHealthReport> {
+    const config = getSupabaseConfig();
+    const projectRef = getSupabaseProjectRef(config.url);
+
+    if (!config.configured || !supabase) {
+      return {
+        isConfigured: false,
+        url: config.url,
+        projectRef,
+        tables: { profiles: false, products: false, movements: false, pro_codes: false },
+        proCodesCount: 0,
+        allTablesExist: false,
+        error: 'Variables VITE_SUPABASE_URL ou VITE_SUPABASE_ANON_KEY manquantes.',
+      };
+    }
+
+    const tablesStatus = {
+      profiles: false,
+      products: false,
+      movements: false,
+      pro_codes: false,
+    };
+    let proCodesCount = 0;
+
+    try {
+      // Test profiles
+      const { error: errProfiles } = await supabase.from('profiles').select('id').limit(1);
+      tablesStatus.profiles = !(errProfiles && errProfiles.code === 'PGRST205');
+
+      // Test products
+      const { error: errProducts } = await supabase.from('products').select('id').limit(1);
+      tablesStatus.products = !(errProducts && errProducts.code === 'PGRST205');
+
+      // Test movements
+      const { error: errMovements } = await supabase.from('movements').select('id').limit(1);
+      tablesStatus.movements = !(errMovements && errMovements.code === 'PGRST205');
+
+      // Test pro_codes
+      const { data: proData, error: errProCodes } = await supabase
+        .from('pro_codes')
+        .select('id');
+
+      if (!(errProCodes && errProCodes.code === 'PGRST205')) {
+        tablesStatus.pro_codes = true;
+        proCodesCount = proData?.length || 0;
+      }
+    } catch (err: any) {
+      console.warn('Erreur lors du test des tables Supabase:', err);
+    }
+
+    const allTablesExist =
+      tablesStatus.profiles &&
+      tablesStatus.products &&
+      tablesStatus.movements &&
+      tablesStatus.pro_codes;
+
+    return {
+      isConfigured: true,
+      url: config.url,
+      projectRef,
+      tables: tablesStatus,
+      proCodesCount,
+      allTablesExist,
+    };
+  },
+
+  // ==========================================
+  // AUTHENTIFICATION SUPABASE
   // ==========================================
 
   async signUp(params: {
@@ -70,8 +119,10 @@ export const cloudService = {
     password: string;
   }): Promise<AuthResponse> {
     const email = params.email.trim().toLowerCase();
+    const businessName = params.businessName.trim() || 'Ma Quincaillerie';
+    const ownerName = params.ownerName.trim() || 'Responsable';
+    const phone = params.phone.trim();
 
-    // 1. Live Supabase flow
     if (isSupabaseConfigured() && supabase) {
       try {
         const { data, error } = await supabase.auth.signUp({
@@ -79,45 +130,75 @@ export const cloudService = {
           password: params.password,
           options: {
             data: {
-              business_name: params.businessName.trim(),
-              owner_name: params.ownerName.trim(),
-              phone: params.phone.trim(),
+              business_name: businessName,
+              owner_name: ownerName,
+              phone,
             },
           },
         });
 
         if (error) {
+          if (error.status === 429 || (error as any).code === 'over_email_send_rate_limit') {
+            return {
+              success: false,
+              error:
+                'Limite d\'envoi d\'emails de Supabase atteinte. Pour supprimer cette limite, désactivez "Confirm email" dans Supabase (Authentication -> Providers -> Email).',
+            };
+          }
+          if (error.message.includes('invalid') && error.message.includes('Email')) {
+            return {
+              success: false,
+              error: 'Veuillez saisir une adresse email valide (ex: contact@votre-quincaillerie.com).',
+            };
+          }
           return { success: false, error: error.message };
         }
 
         if (!data.user) {
-          return { success: false, error: 'Échec de la création du compte.' };
+          return { success: false, error: 'Échec de la création du compte dans Supabase.' };
         }
 
-        // Ensure profile row exists
         const profile: UserProfile = {
           id: data.user.id,
           userId: data.user.id,
-          businessName: params.businessName.trim() || 'Ma Quincaillerie',
-          ownerName: params.ownerName.trim() || 'Responsable',
-          phone: params.phone.trim(),
+          businessName,
+          ownerName,
+          phone,
           email,
           isPro: false,
           createdAt: new Date().toISOString(),
         };
 
+        // Try inserting profile if trigger didn't handle it
         try {
-          await supabase.from('profiles').upsert({
-            id: data.user.id,
-            user_id: data.user.id,
-            business_name: profile.businessName,
-            owner_name: profile.ownerName,
-            phone: profile.phone,
-            email: profile.email,
-            is_pro: false,
-          });
+          await supabase.from('profiles').upsert(
+            {
+              user_id: data.user.id,
+              business_name: businessName,
+              owner_name: ownerName,
+              phone,
+              email,
+              is_pro: false,
+            },
+            { onConflict: 'user_id' }
+          );
         } catch (profileErr) {
-          console.warn('Profile upsert note:', profileErr);
+          console.warn('Upsert profile post-signup note:', profileErr);
+        }
+
+        // If email confirmation is required by Supabase project
+        if (!data.session) {
+          return {
+            success: true,
+            needsEmailConfirmation: true,
+            user: {
+              id: data.user.id,
+              email,
+              profile,
+            },
+            message:
+              'Compte créé dans Supabase ! Veuillez vérifier votre boîte email pour confirmer votre compte, ou désactivez "Confirm email" dans Supabase pour vous connecter instantanément.',
+          };
         }
 
         return {
@@ -127,61 +208,22 @@ export const cloudService = {
             email,
             profile,
           },
-          message: 'Compte créé avec succès !',
+          message: 'Compte créé avec succès dans Supabase !',
         };
       } catch (err: any) {
-        return { success: false, error: err?.message || 'Erreur lors de l\'inscription.' };
+        return { success: false, error: err?.message || 'Erreur lors de l\'inscription Supabase.' };
       }
     }
 
-    // 2. Simulated Cloud Store (Local Preview / Demo)
-    try {
-      const usersRaw = localStorage.getItem(CLOUD_STORAGE_KEYS.USERS);
-      const users: Record<string, any> = usersRaw ? JSON.parse(usersRaw) : {};
-
-      if (users[email]) {
-        return {
-          success: false,
-          error: 'Un compte avec cette adresse e-mail existe déjà. Veuillez vous connecter.',
-        };
-      }
-
-      const userId = 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-      const profile: UserProfile = {
-        id: userId,
-        userId,
-        businessName: params.businessName.trim() || 'Ma Quincaillerie',
-        ownerName: params.ownerName.trim() || 'Responsable',
-        phone: params.phone.trim(),
-        email,
-        isPro: false,
-        createdAt: new Date().toISOString(),
-      };
-
-      users[email] = {
-        id: userId,
-        email,
-        password: params.password, // In simulated mode
-        profile,
-      };
-
-      localStorage.setItem(CLOUD_STORAGE_KEYS.USERS, JSON.stringify(users));
-      localStorage.setItem(CLOUD_STORAGE_KEYS.SESSION, JSON.stringify({ userId, email }));
-
-      return {
-        success: true,
-        user: { id: userId, email, profile },
-        message: 'Compte créé avec succès !',
-      };
-    } catch (err: any) {
-      return { success: false, error: 'Erreur lors de l\'inscription locale.' };
-    }
+    return {
+      success: false,
+      error: 'Supabase n\'est pas configuré. Veuillez vérifier VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY.',
+    };
   },
 
   async signIn(emailInput: string, passwordInput: string): Promise<AuthResponse> {
     const email = emailInput.trim().toLowerCase();
 
-    // 1. Live Supabase flow
     if (isSupabaseConfigured() && supabase) {
       try {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -190,11 +232,25 @@ export const cloudService = {
         });
 
         if (error) {
-          return { success: false, error: 'Identifiants invalides. Vérifiez votre e-mail et mot de passe.' };
+          if (error.message === 'Email not confirmed' || (error as any).code === 'email_not_confirmed') {
+            return {
+              success: false,
+              needsEmailConfirmation: true,
+              error:
+                'Votre adresse e-mail n\'a pas encore été confirmée. Veuillez cliquer sur le lien reçu par e-mail, ou désactivez l\'option "Confirm email" dans votre projet Supabase (Authentication -> Providers -> Email) pour autoriser la connexion directe.',
+            };
+          }
+          if (error.message.toLowerCase().includes('invalid login credentials')) {
+            return {
+              success: false,
+              error: 'Adresse email ou mot de passe incorrect.',
+            };
+          }
+          return { success: false, error: error.message };
         }
 
         if (!data.user) {
-          return { success: false, error: 'Utilisateur non trouvé.' };
+          return { success: false, error: 'Utilisateur non trouvé dans Supabase.' };
         }
 
         // Fetch user profile from Supabase
@@ -202,13 +258,19 @@ export const cloudService = {
           .from('profiles')
           .select('*')
           .eq('user_id', data.user.id)
-          .single();
+          .maybeSingle();
 
         const profile: UserProfile = {
           id: profileData?.id || data.user.id,
           userId: data.user.id,
-          businessName: profileData?.business_name || data.user.user_metadata?.business_name || 'Ma Quincaillerie',
-          ownerName: profileData?.owner_name || data.user.user_metadata?.owner_name || 'Responsable',
+          businessName:
+            profileData?.business_name ||
+            data.user.user_metadata?.business_name ||
+            'Ma Quincaillerie',
+          ownerName:
+            profileData?.owner_name ||
+            data.user.user_metadata?.owner_name ||
+            'Responsable',
           phone: profileData?.phone || data.user.user_metadata?.phone || '',
           email: profileData?.email || data.user.email || email,
           isPro: Boolean(profileData?.is_pro),
@@ -228,35 +290,10 @@ export const cloudService = {
       }
     }
 
-    // 2. Simulated Cloud Store
-    try {
-      const usersRaw = localStorage.getItem(CLOUD_STORAGE_KEYS.USERS);
-      const users: Record<string, any> = usersRaw ? JSON.parse(usersRaw) : {};
-
-      const userRecord = users[email];
-      if (!userRecord || userRecord.password !== passwordInput) {
-        return {
-          success: false,
-          error: 'Adresse e-mail ou mot de passe incorrect.',
-        };
-      }
-
-      localStorage.setItem(
-        CLOUD_STORAGE_KEYS.SESSION,
-        JSON.stringify({ userId: userRecord.id, email })
-      );
-
-      return {
-        success: true,
-        user: {
-          id: userRecord.id,
-          email: userRecord.email,
-          profile: userRecord.profile,
-        },
-      };
-    } catch {
-      return { success: false, error: 'Erreur lors de la connexion.' };
-    }
+    return {
+      success: false,
+      error: 'Supabase n\'est pas configuré. Veuillez vérifier VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY.',
+    };
   },
 
   async signOut(): Promise<void> {
@@ -267,29 +304,35 @@ export const cloudService = {
         console.error('Erreur signOut Supabase:', err);
       }
     }
-    localStorage.removeItem(CLOUD_STORAGE_KEYS.SESSION);
   },
 
   async getCurrentSessionUser(): Promise<AuthResponse | null> {
-    // 1. Live Supabase session
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data } = await supabase.auth.getUser();
-        if (!data?.user) return null;
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (!sessionData?.session?.user) return null;
+
+        const user = sessionData.session.user;
 
         const { data: profileData } = await supabase
           .from('profiles')
           .select('*')
-          .eq('user_id', data.user.id)
-          .single();
+          .eq('user_id', user.id)
+          .maybeSingle();
 
         const profile: UserProfile = {
-          id: profileData?.id || data.user.id,
-          userId: data.user.id,
-          businessName: profileData?.business_name || data.user.user_metadata?.business_name || 'Ma Quincaillerie',
-          ownerName: profileData?.owner_name || data.user.user_metadata?.owner_name || 'Responsable',
-          phone: profileData?.phone || data.user.user_metadata?.phone || '',
-          email: profileData?.email || data.user.email || '',
+          id: profileData?.id || user.id,
+          userId: user.id,
+          businessName:
+            profileData?.business_name ||
+            user.user_metadata?.business_name ||
+            'Ma Quincaillerie',
+          ownerName:
+            profileData?.owner_name ||
+            user.user_metadata?.owner_name ||
+            'Responsable',
+          phone: profileData?.phone || user.user_metadata?.phone || '',
+          email: profileData?.email || user.email || '',
           isPro: Boolean(profileData?.is_pro),
           createdAt: profileData?.created_at || new Date().toISOString(),
         };
@@ -297,39 +340,18 @@ export const cloudService = {
         return {
           success: true,
           user: {
-            id: data.user.id,
-            email: data.user.email || '',
+            id: user.id,
+            email: user.email || '',
             profile,
           },
         };
-      } catch {
+      } catch (err) {
+        console.error('Erreur getCurrentSessionUser:', err);
         return null;
       }
     }
 
-    // 2. Simulated session
-    try {
-      const sessionRaw = localStorage.getItem(CLOUD_STORAGE_KEYS.SESSION);
-      if (!sessionRaw) return null;
-
-      const { email, userId } = JSON.parse(sessionRaw);
-      const usersRaw = localStorage.getItem(CLOUD_STORAGE_KEYS.USERS);
-      const users: Record<string, any> = usersRaw ? JSON.parse(usersRaw) : {};
-
-      const userRecord = users[email];
-      if (!userRecord) return null;
-
-      return {
-        success: true,
-        user: {
-          id: userId || userRecord.id,
-          email: userRecord.email,
-          profile: userRecord.profile,
-        },
-      };
-    } catch {
-      return null;
-    }
+    return null;
   },
 
   async resetPassword(email: string): Promise<{ success: boolean; message: string }> {
@@ -342,14 +364,15 @@ export const cloudService = {
         if (error) {
           return { success: false, message: error.message };
         }
+        return {
+          success: true,
+          message: 'Un lien de réinitialisation sécurisé a été envoyé à votre adresse e-mail.',
+        };
       } catch (err: any) {
         return { success: false, message: err.message || 'Erreur réinitialisation.' };
       }
     }
-    return {
-      success: true,
-      message: 'Un lien de récupération a été envoyé à votre adresse e-mail.',
-    };
+    return { success: false, message: 'Supabase n\'est pas configuré.' };
   },
 
   async updatePassword(newPassword: string): Promise<{ success: boolean; message: string }> {
@@ -364,15 +387,15 @@ export const cloudService = {
         return { success: false, message: err.message || 'Erreur mise à jour mot de passe.' };
       }
     }
-    return { success: true, message: 'Mot de passe mis à jour avec succès !' };
+    return { success: false, message: 'Supabase n\'est pas configuré.' };
   },
 
   // ==========================================
-  // PRODUITS (CLOUD SYNC)
+  // PRODUITS (SUPABASE CLOUD)
   // ==========================================
 
-  async fetchProducts(userId: string): Promise<Product[]> {
-    if (!userId) return [];
+  async fetchProducts(userId: string): Promise<{ products: Product[]; error?: string }> {
+    if (!userId) return { products: [] };
 
     if (isSupabaseConfigured() && supabase) {
       try {
@@ -384,10 +407,16 @@ export const cloudService = {
 
         if (error) {
           console.error('Erreur fetchProducts Supabase:', error);
-          return [];
+          if (error.code === 'PGRST205') {
+            return {
+              products: [],
+              error: 'La table "products" n\'a pas encore été créée dans votre projet Supabase.',
+            };
+          }
+          return { products: [], error: error.message };
         }
 
-        return (data || []).map((row) => ({
+        const products: Product[] = (data || []).map((row) => ({
           id: row.id,
           userId: row.user_id,
           name: row.name,
@@ -397,68 +426,59 @@ export const cloudService = {
           createdAt: row.created_at,
           updatedAt: row.updated_at,
         }));
-      } catch (err) {
+
+        return { products };
+      } catch (err: any) {
         console.error('Exception fetchProducts Supabase:', err);
-        return [];
+        return { products: [], error: err?.message };
       }
     }
 
-    // Simulated cloud data per user
-    try {
-      const raw = localStorage.getItem(`quinca_cloud_products_${userId}`);
-      if (!raw) return [];
-      return JSON.parse(raw);
-    } catch {
-      return [];
-    }
+    return { products: [], error: 'Supabase non configuré.' };
   },
 
-  async saveProduct(userId: string, product: Product): Promise<boolean> {
-    if (!userId) return false;
+  async saveProduct(userId: string, product: Product): Promise<{ success: boolean; error?: string }> {
+    if (!userId) return { success: false, error: 'Utilisateur non identifié.' };
 
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { error } = await supabase.from('products').upsert({
-          id: product.id,
-          user_id: userId,
-          name: product.name,
-          category: product.category,
-          unit_price: product.unitPrice,
-          quantity: product.quantity,
-          created_at: product.createdAt,
-          updated_at: product.updatedAt,
-        });
+        const { error } = await supabase.from('products').upsert(
+          {
+            id: product.id,
+            user_id: userId,
+            name: product.name,
+            category: product.category,
+            unit_price: product.unitPrice,
+            quantity: product.quantity,
+            created_at: product.createdAt,
+            updated_at: product.updatedAt,
+          },
+          { onConflict: 'id' }
+        );
+
         if (error) {
           console.error('Erreur saveProduct Supabase:', error);
-          return false;
+          if (error.code === 'PGRST205') {
+            return {
+              success: false,
+              error: 'Table "products" introuvable dans Supabase. Veuillez exécuter le schéma SQL.',
+            };
+          }
+          return { success: false, error: error.message };
         }
-        return true;
-      } catch (err) {
+
+        return { success: true };
+      } catch (err: any) {
         console.error('Exception saveProduct Supabase:', err);
-        return false;
+        return { success: false, error: err?.message || 'Erreur enregistrement produit.' };
       }
     }
 
-    // Simulated cloud store per user
-    try {
-      const existing = await this.fetchProducts(userId);
-      const index = existing.findIndex((p) => p.id === product.id);
-      let updated: Product[];
-      if (index >= 0) {
-        updated = [...existing];
-        updated[index] = product;
-      } else {
-        updated = [product, ...existing];
-      }
-      localStorage.setItem(`quinca_cloud_products_${userId}`, JSON.stringify(updated));
-      return true;
-    } catch {
-      return false;
-    }
+    return { success: false, error: 'Supabase non configuré.' };
   },
 
-  async deleteProduct(userId: string, productId: string): Promise<boolean> {
-    if (!userId || !productId) return false;
+  async deleteProduct(userId: string, productId: string): Promise<{ success: boolean; error?: string }> {
+    if (!userId || !productId) return { success: false, error: 'Identifiants invalides.' };
 
     if (isSupabaseConfigured() && supabase) {
       try {
@@ -470,32 +490,25 @@ export const cloudService = {
 
         if (error) {
           console.error('Erreur deleteProduct Supabase:', error);
-          return false;
+          return { success: false, error: error.message };
         }
-        return true;
-      } catch (err) {
+
+        return { success: true };
+      } catch (err: any) {
         console.error('Exception deleteProduct Supabase:', err);
-        return false;
+        return { success: false, error: err?.message };
       }
     }
 
-    // Simulated cloud store
-    try {
-      const existing = await this.fetchProducts(userId);
-      const filtered = existing.filter((p) => p.id !== productId);
-      localStorage.setItem(`quinca_cloud_products_${userId}`, JSON.stringify(filtered));
-      return true;
-    } catch {
-      return false;
-    }
+    return { success: false, error: 'Supabase non configuré.' };
   },
 
   // ==========================================
-  // MOUVEMENTS (CLOUD SYNC)
+  // MOUVEMENTS (SUPABASE CLOUD)
   // ==========================================
 
-  async fetchMovements(userId: string): Promise<Movement[]> {
-    if (!userId) return [];
+  async fetchMovements(userId: string): Promise<{ movements: Movement[]; error?: string }> {
+    if (!userId) return { movements: [] };
 
     if (isSupabaseConfigured() && supabase) {
       try {
@@ -507,10 +520,16 @@ export const cloudService = {
 
         if (error) {
           console.error('Erreur fetchMovements Supabase:', error);
-          return [];
+          if (error.code === 'PGRST205') {
+            return {
+              movements: [],
+              error: 'La table "movements" n\'a pas encore été créée dans votre projet Supabase.',
+            };
+          }
+          return { movements: [], error: error.message };
         }
 
-        return (data || []).map((row) => ({
+        const movements: Movement[] = (data || []).map((row) => ({
           id: row.id,
           userId: row.user_id,
           timestamp: row.created_at,
@@ -521,24 +540,19 @@ export const cloudService = {
           stockAfter: Number(row.stock_after) || 0,
           unitPrice: Number(row.unit_price) || 0,
         }));
-      } catch (err) {
+
+        return { movements };
+      } catch (err: any) {
         console.error('Exception fetchMovements Supabase:', err);
-        return [];
+        return { movements: [], error: err?.message };
       }
     }
 
-    // Simulated cloud movements
-    try {
-      const raw = localStorage.getItem(`quinca_cloud_movements_${userId}`);
-      if (!raw) return [];
-      return JSON.parse(raw);
-    } catch {
-      return [];
-    }
+    return { movements: [], error: 'Supabase non configuré.' };
   },
 
-  async saveMovement(userId: string, movement: Movement): Promise<boolean> {
-    if (!userId) return false;
+  async saveMovement(userId: string, movement: Movement): Promise<{ success: boolean; error?: string }> {
+    if (!userId) return { success: false, error: 'Utilisateur non identifié.' };
 
     if (isSupabaseConfigured() && supabase) {
       try {
@@ -556,24 +570,23 @@ export const cloudService = {
 
         if (error) {
           console.error('Erreur saveMovement Supabase:', error);
-          return false;
+          if (error.code === 'PGRST205') {
+            return {
+              success: false,
+              error: 'Table "movements" introuvable dans Supabase. Veuillez exécuter le schéma SQL.',
+            };
+          }
+          return { success: false, error: error.message };
         }
-        return true;
-      } catch (err) {
+
+        return { success: true };
+      } catch (err: any) {
         console.error('Exception saveMovement Supabase:', err);
-        return false;
+        return { success: false, error: err?.message };
       }
     }
 
-    // Simulated cloud movements
-    try {
-      const existing = await this.fetchMovements(userId);
-      const updated = [movement, ...existing];
-      localStorage.setItem(`quinca_cloud_movements_${userId}`, JSON.stringify(updated));
-      return true;
-    } catch {
-      return false;
-    }
+    return { success: false, error: 'Supabase non configuré.' };
   },
 
   // ==========================================
@@ -591,10 +604,9 @@ export const cloudService = {
 
     const cleanCode = (inputCode || '').trim().toUpperCase();
 
-    // 1. Live Supabase flow
     if (isSupabaseConfigured() && supabase) {
       try {
-        // First try the secure atomic RPC function
+        // 1. First attempt: Atomic RPC function
         const { data, error } = await supabase.rpc('activate_pro_code', {
           p_code: cleanCode,
         });
@@ -607,13 +619,13 @@ export const cloudService = {
           };
         }
 
-        // Fallback to table queries with RLS if RPC not deployed yet
-        // 1. Check if user already PRO
+        // 2. Fallback: Table-level verification with atomic update
+        // Check if user is already PRO
         const { data: profileData } = await supabase
           .from('profiles')
           .select('is_pro')
           .eq('user_id', userId)
-          .single();
+          .maybeSingle();
 
         if (profileData?.is_pro) {
           return {
@@ -623,7 +635,7 @@ export const cloudService = {
           };
         }
 
-        // 2. Check if code exists in pro_codes
+        // Check if code exists in pro_codes
         const { data: codeRecord, error: codeErr } = await supabase
           .from('pro_codes')
           .select('*')
@@ -638,7 +650,7 @@ export const cloudService = {
           };
         }
 
-        // 3. Check if already used
+        // Check if already used
         if (codeRecord.is_used) {
           return {
             success: false,
@@ -647,8 +659,8 @@ export const cloudService = {
           };
         }
 
-        // 4. Mark code used atomically
-        await supabase
+        // Mark code used atomically
+        const { error: updateCodeErr } = await supabase
           .from('pro_codes')
           .update({
             is_used: true,
@@ -658,7 +670,15 @@ export const cloudService = {
           .eq('id', codeRecord.id)
           .eq('is_used', false);
 
-        // 5. Update profile
+        if (updateCodeErr) {
+          return {
+            success: false,
+            status: 'ERROR',
+            message: 'Erreur lors de la validation du code.',
+          };
+        }
+
+        // Update profile to PRO
         await supabase
           .from('profiles')
           .update({ is_pro: true })
@@ -678,68 +698,11 @@ export const cloudService = {
       }
     }
 
-    // 2. Simulated Cloud flow (Preview mode)
-    try {
-      // 1. Check if user is already PRO
-      const usersRaw = localStorage.getItem(CLOUD_STORAGE_KEYS.USERS);
-      const users: Record<string, any> = usersRaw ? JSON.parse(usersRaw) : {};
-      const userKey = Object.keys(users).find((k) => users[k].id === userId);
-
-      if (userKey && users[userKey].profile?.isPro) {
-        return {
-          success: false,
-          status: 'ALREADY_PRO',
-          message: '⭐ Votre compte QuincaStock PRO est déjà activé.',
-        };
-      }
-
-      // 2. Check valid codes
-      if (!VALID_PRO_CODES.includes(cleanCode)) {
-        return {
-          success: false,
-          status: 'INVALID_CODE',
-          message: '❌ Code PRO invalide.',
-        };
-      }
-
-      // 3. Check if already used in cloud codes table
-      const codes = getStoredCloudCodes();
-      const codeData = codes[cleanCode];
-
-      if (codeData && codeData.isUsed) {
-        return {
-          success: false,
-          status: 'ALREADY_USED',
-          message: '❌ Ce code PRO a déjà été utilisé.',
-        };
-      }
-
-      // 4. Mark code as used
-      codes[cleanCode] = {
-        isUsed: true,
-        usedBy: userId,
-        usedAt: new Date().toISOString(),
-      };
-      saveStoredCloudCodes(codes);
-
-      // 5. Update profile
-      if (userKey) {
-        users[userKey].profile.isPro = true;
-        localStorage.setItem(CLOUD_STORAGE_KEYS.USERS, JSON.stringify(users));
-      }
-
-      return {
-        success: true,
-        status: 'SUCCESS',
-        message: '🎉 Félicitations ! Votre compte QuincaStock PRO est maintenant activé.',
-      };
-    } catch {
-      return {
-        success: false,
-        status: 'ERROR',
-        message: 'Erreur lors de l\'activation.',
-      };
-    }
+    return {
+      success: false,
+      status: 'ERROR',
+      message: 'Supabase n\'est pas connecté.',
+    };
   },
 
   // ==========================================
@@ -750,20 +713,29 @@ export const cloudService = {
     userId: string,
     localProducts: Product[],
     localMovements: Movement[]
-  ): Promise<{ productsImported: number; movementsImported: number }> {
+  ): Promise<{ productsImported: number; movementsImported: number; errors: string[] }> {
     let pCount = 0;
     let mCount = 0;
+    const errors: string[] = [];
 
     for (const p of localProducts) {
-      const ok = await this.saveProduct(userId, { ...p, userId });
-      if (ok) pCount++;
+      const res = await this.saveProduct(userId, { ...p, userId });
+      if (res.success) {
+        pCount++;
+      } else if (res.error) {
+        errors.push(res.error);
+      }
     }
 
     for (const m of localMovements) {
-      const ok = await this.saveMovement(userId, { ...m, userId });
-      if (ok) mCount++;
+      const res = await this.saveMovement(userId, { ...m, userId });
+      if (res.success) {
+        mCount++;
+      } else if (res.error) {
+        errors.push(res.error);
+      }
     }
 
-    return { productsImported: pCount, movementsImported: mCount };
+    return { productsImported: pCount, movementsImported: mCount, errors };
   },
 };

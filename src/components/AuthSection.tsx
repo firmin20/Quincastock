@@ -13,11 +13,12 @@ import {
   AlertCircle,
   Sparkles,
   ShieldCheck,
-  CloudCheck
+  Database
 } from 'lucide-react';
 import { AuthView, UserProfile } from '../types';
 import { cloudService } from '../services/cloudService';
 import { isSupabaseConfigured } from '../lib/supabase';
+import { SupabaseSetupBanner } from './SupabaseSetupBanner';
 
 interface AuthSectionProps {
   onAuthSuccess: (user: { id: string; email: string; profile: UserProfile }) => void;
@@ -106,9 +107,15 @@ export const AuthSection: React.FC<AuthSectionProps> = ({
         password,
       });
 
-      if (res.success && res.user) {
+      if (res.success && res.user && !res.needsEmailConfirmation) {
         onAuthSuccess(res.user);
         onShowToast('Compte créé avec succès ! Sauvegarde cloud activée.', 'success');
+      } else if (res.success && res.needsEmailConfirmation) {
+        setSuccessMessage(
+          res.message ||
+            'Compte créé dans Supabase ! Veuillez vérifier votre boîte e-mail pour confirmer votre compte (ou désactivez "Confirm email" dans Supabase pour connexion directe).'
+        );
+        setView('login');
       } else {
         setErrorMessage(res.error || 'Erreur lors de la création du compte.');
       }
@@ -165,6 +172,11 @@ export const AuthSection: React.FC<AuthSectionProps> = ({
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
           <span>Sauvegarde Cloud Sécurisée & Récupération Mobile</span>
         </div>
+      </div>
+
+      {/* Supabase Status Banner */}
+      <div className="sm:mx-auto sm:w-full sm:max-w-lg mb-6">
+        <SupabaseSetupBanner />
       </div>
 
       {/* Main Card */}

@@ -12,6 +12,7 @@ import { ContactSection } from './components/ContactSection';
 import { Footer } from './components/Footer';
 import { AuthSection } from './components/AuthSection';
 import { DataMigrationBanner } from './components/DataMigrationBanner';
+import { SupabaseSetupBanner } from './components/SupabaseSetupBanner';
 import { ModalEntreeStock } from './components/ModalEntreeStock';
 import { ModalSortieStock } from './components/ModalSortieStock';
 import { ModalModifierPrix } from './components/ModalModifierPrix';
@@ -78,12 +79,15 @@ export default function App() {
   const refreshUserData = useCallback(async (userId: string) => {
     setDataLoading(true);
     try {
-      const [cloudProducts, cloudMovements] = await Promise.all([
+      const [prodRes, movRes] = await Promise.all([
         cloudService.fetchProducts(userId),
         cloudService.fetchMovements(userId),
       ]);
-      setProducts(cloudProducts);
-      setMovements(cloudMovements);
+      setProducts(prodRes.products || []);
+      setMovements(movRes.movements || []);
+      if (prodRes.error) {
+        addToast(prodRes.error, 'warning');
+      }
     } catch (err) {
       console.error('Erreur chargement données cloud:', err);
       addToast('Erreur de synchronisation avec le cloud.', 'error');
@@ -193,8 +197,11 @@ export default function App() {
     addToast('✓ Produit ajouté au stock (synchronisé au cloud)', 'success');
 
     // Cloud persistence
-    await cloudService.saveProduct(currentUser.id, targetProduct);
-    await cloudService.saveMovement(currentUser.id, newMovement);
+    const saveProdRes = await cloudService.saveProduct(currentUser.id, targetProduct);
+    const saveMovRes = await cloudService.saveMovement(currentUser.id, newMovement);
+    if (!saveProdRes.success && saveProdRes.error) {
+      addToast(saveProdRes.error, 'error');
+    }
   };
 
   // ----------------------------------------------------
@@ -241,8 +248,11 @@ export default function App() {
     addToast('✓ Vente enregistrée (synchronisée au cloud)', 'success');
 
     // Cloud persistence
-    await cloudService.saveProduct(currentUser.id, updatedProduct);
-    await cloudService.saveMovement(currentUser.id, newMovement);
+    const saveProdRes = await cloudService.saveProduct(currentUser.id, updatedProduct);
+    const saveMovRes = await cloudService.saveMovement(currentUser.id, newMovement);
+    if (!saveProdRes.success && saveProdRes.error) {
+      addToast(saveProdRes.error, 'error');
+    }
   };
 
   // ----------------------------------------------------
@@ -265,7 +275,10 @@ export default function App() {
     setProducts(updatedProducts);
     addToast('✓ Prix modifié et sauvegardé', 'success');
 
-    await cloudService.saveProduct(currentUser.id, updatedProduct);
+    const res = await cloudService.saveProduct(currentUser.id, updatedProduct);
+    if (!res.success && res.error) {
+      addToast(res.error, 'error');
+    }
   };
 
   // ----------------------------------------------------
@@ -278,7 +291,10 @@ export default function App() {
     setProducts(updatedProducts);
     addToast('✓ Article supprimé du stock', 'info');
 
-    await cloudService.deleteProduct(currentUser.id, productId);
+    const res = await cloudService.deleteProduct(currentUser.id, productId);
+    if (!res.success && res.error) {
+      addToast(res.error, 'error');
+    }
   };
 
   // ----------------------------------------------------
@@ -356,6 +372,11 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        {/* Supabase Status & Setup Helper */}
+        <div className="mb-6">
+          <SupabaseSetupBanner />
+        </div>
+
         {/* Migration banner if local data exists */}
         <DataMigrationBanner
           userId={currentUser.id}
