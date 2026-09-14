@@ -1,6 +1,6 @@
 {
   "name": "QuincaStock - Gestion Quincaillerie Pro",
-  "description": "Application simple et robuste pour gérer les stocks, achats et ventes d'une quincaillerie au Cameroun.",
+  "description": "Application SaaS de gestion de quincaillerie avec sauvegarde cloud Supabase, comptes marchands, suivi des stocks, achats, ventes et statut PRO.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

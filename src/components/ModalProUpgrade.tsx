@@ -10,10 +10,13 @@ import {
   AlertCircle,
   ShieldCheck 
 } from 'lucide-react';
-import { OWNER_CONTACT, verifyProCode } from '../utils/formatters';
+import { OWNER_CONTACT } from '../utils/formatters';
+import { cloudService } from '../services/cloudService';
 
 interface ModalProUpgradeProps {
   isOpen: boolean;
+  userId: string;
+  isAlreadyPro: boolean;
   onClose: () => void;
   onActivateSuccess: () => void;
   onShowToast: (message: string, type: 'success' | 'error' | 'info' | 'warning') => void;
@@ -21,35 +24,47 @@ interface ModalProUpgradeProps {
 
 export const ModalProUpgrade: React.FC<ModalProUpgradeProps> = ({
   isOpen,
+  userId,
+  isAlreadyPro,
   onClose,
   onActivateSuccess,
   onShowToast,
 }) => {
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [showCodeInput, setShowCodeInput] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleActivate = (e: React.FormEvent) => {
+  const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    if (isAlreadyPro) {
+      setError('⭐ Votre compte QuincaStock PRO est déjà activé.');
+      return;
+    }
 
     if (!code.trim()) {
       setError('Veuillez saisir votre code d\'activation.');
       return;
     }
 
-    const isValid = verifyProCode(code);
-    if (isValid) {
-      localStorage.setItem('quinca_paye', 'true');
-      onActivateSuccess();
-      onShowToast('✓ QuincaStock PRO activé avec succès !', 'success');
-      onClose();
-    } else {
-      setError(
-        "Ce code PRO n'est pas reconnu. Vérifiez votre code et réessayez."
-      );
+    setLoading(true);
+    try {
+      const res = await cloudService.activateProCode(userId, code);
+      if (res.success && res.status === 'SUCCESS') {
+        onActivateSuccess();
+        onShowToast(res.message, 'success');
+        onClose();
+      } else {
+        setError(res.message);
+      }
+    } catch {
+      setError('Erreur de communication avec le serveur lors de la validation.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -194,19 +209,17 @@ export const ModalProUpgrade: React.FC<ModalProUpgradeProps> = ({
                 />
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-white font-bold text-xs sm:text-sm cursor-pointer"
+                  disabled={loading}
+                  className="px-5 py-2.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-white font-bold text-xs sm:text-sm cursor-pointer disabled:opacity-50"
                 >
-                  Activer
+                  {loading ? 'Vérification...' : 'Activer'}
                 </button>
               </div>
 
               {error && (
                 <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-semibold text-red-700 flex items-start space-x-2">
                   <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold">❌ Code invalide : </span>
-                    {error}
-                  </div>
+                  <div>{error}</div>
                 </div>
               )}
             </form>

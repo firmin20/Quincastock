@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Package, ArrowLeftRight, Sparkles, HelpCircle } from 'lucide-react';
+import { LayoutDashboard, Package, ArrowLeftRight, Sparkles, HelpCircle, User } from 'lucide-react';
 import { ActiveTab } from '../types';
 
 interface NavigationProps {
@@ -38,6 +38,11 @@ export const Navigation: React.FC<NavigationProps> = ({
       id: 'movements',
       label: 'Mouvements',
       icon: ArrowLeftRight,
+    },
+    {
+      id: 'profile',
+      label: 'Mon compte',
+      icon: User,
     },
     {
       id: 'pro',

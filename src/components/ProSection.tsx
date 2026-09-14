@@ -12,9 +12,11 @@ import {
   HelpCircle,
   Zap
 } from 'lucide-react';
-import { OWNER_CONTACT, verifyProCode } from '../utils/formatters';
+import { OWNER_CONTACT } from '../utils/formatters';
+import { cloudService } from '../services/cloudService';
 
 interface ProSectionProps {
+  userId: string;
   isPro: boolean;
   productCount: number;
   onActivateSuccess: () => void;
@@ -22,6 +24,7 @@ interface ProSectionProps {
 }
 
 export const ProSection: React.FC<ProSectionProps> = ({
+  userId,
   isPro,
   productCount,
   onActivateSuccess,
@@ -29,27 +32,37 @@ export const ProSection: React.FC<ProSectionProps> = ({
 }) => {
   const [inputCode, setInputCode] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [loading, setLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState(false);
 
-  const handleActivate = (e: React.FormEvent) => {
+  const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+
+    if (isPro) {
+      setErrorMessage('⭐ Votre compte QuincaStock PRO est déjà activé.');
+      return;
+    }
 
     if (!inputCode.trim()) {
       setErrorMessage('Veuillez saisir votre code d\'activation.');
       return;
     }
 
-    const isValid = verifyProCode(inputCode);
-    if (isValid) {
-      localStorage.setItem('quinca_paye', 'true');
-      setSuccessMessage(true);
-      onActivateSuccess();
-      onShowToast('✓ QuincaStock PRO activé avec succès !', 'success');
-    } else {
-      setErrorMessage(
-        "❌ Code invalide : Ce code PRO n'est pas reconnu. Vérifiez votre code et réessayez."
-      );
+    setLoading(true);
+    try {
+      const res = await cloudService.activateProCode(userId, inputCode);
+      if (res.success && res.status === 'SUCCESS') {
+        setSuccessMessage(true);
+        onActivateSuccess();
+        onShowToast(res.message, 'success');
+      } else {
+        setErrorMessage(res.message);
+      }
+    } catch {
+      setErrorMessage('Erreur de communication avec le serveur lors de la validation.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -294,10 +307,11 @@ export const ProSection: React.FC<ProSectionProps> = ({
                 <button
                   type="submit"
                   id="pro-code-submit-btn"
-                  className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-white font-extrabold text-sm shadow-md transition-colors cursor-pointer flex items-center justify-center space-x-2 min-h-[48px]"
+                  disabled={loading}
+                  className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-white font-extrabold text-sm shadow-md transition-colors cursor-pointer flex items-center justify-center space-x-2 min-h-[48px] disabled:opacity-50"
                 >
                   <KeyRound className="w-4 h-4" />
-                  <span>Activer</span>
+                  <span>{loading ? 'Vérification...' : 'Activer'}</span>
                 </button>
               </div>
             </div>
@@ -305,12 +319,7 @@ export const ProSection: React.FC<ProSectionProps> = ({
             {errorMessage && (
               <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm font-semibold flex items-start space-x-2">
                 <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-red-600" />
-                <div>
-                  <div className="font-bold">❌ Code invalide</div>
-                  <div className="text-xs mt-0.5">
-                    Ce code PRO n'est pas reconnu. Vérifiez votre code et réessayez.
-                  </div>
-                </div>
+                <div className="font-bold">{errorMessage}</div>
               </div>
             )}
           </form>

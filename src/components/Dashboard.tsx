@@ -61,11 +61,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {/* Title & Subtitle + Plan Badge */}
       <div className="bg-white rounded-2xl p-5 sm:p-7 shadow-xs border border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-black text-gray-900 tracking-tight">
-            Tableau de bord
+          <h1 className="text-2xl sm:text-3xl font-black text-gray-900 tracking-tight flex items-center gap-2">
+            Bienvenue sur QuincaStock 👋
           </h1>
           <p className="text-sm sm:text-base text-gray-600 mt-1 font-medium">
-            Gérez facilement votre stock et vos mouvements.
+            Voici l'état actuel de votre stock.
           </p>
         </div>
 

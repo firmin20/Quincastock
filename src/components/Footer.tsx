@@ -63,7 +63,14 @@ export const Footer: React.FC<FooterProps> = ({ onOpenPro, onNavigateContact }) 
         </div>
 
         <div className="pt-6 flex flex-col sm:flex-row items-center justify-between text-xs text-gray-400 gap-3">
-          <p>© 2026 QuincaStock. Tous droits réservés.</p>
+          <div className="flex items-center gap-2">
+            <span>© 2026 QuincaStock • Version 2 SaaS Cloud</span>
+            <span className="hidden sm:inline">•</span>
+            <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
+              Sauvegarde Cloud Active
+            </span>
+          </div>
           <div className="flex items-center space-x-4">
             <button
               onClick={onOpenPro}
