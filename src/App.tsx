@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Product, Movement, Category, Toast, ActiveTab, UserProfile } from './types';
+import { supabase } from './lib/supabase';
 import { cloudService } from './services/cloudService';
 import { Header } from './components/Header';
 import { Navigation } from './components/Navigation';
@@ -58,21 +59,54 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // 1. Check Session on initial mount
+  // 1. Check Session on initial mount & listen to auth state changes across tabs/browsers
   useEffect(() => {
+    let isMounted = true;
+
     const checkSession = async () => {
       try {
         const sessionRes = await cloudService.getCurrentSessionUser();
-        if (sessionRes?.success && sessionRes.user) {
+        if (isMounted && sessionRes?.success && sessionRes.user) {
           setCurrentUser(sessionRes.user);
         }
       } catch (err) {
         console.error('Erreur vérification session:', err);
       } finally {
-        setAuthLoading(false);
+        if (isMounted) {
+          setAuthLoading(false);
+        }
       }
     };
+
     checkSession();
+
+    // Supabase auth subscription: sync instantly on login, logout, token refresh
+    if (supabase) {
+      const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (!isMounted) return;
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && session?.user) {
+          const sessionRes = await cloudService.getCurrentSessionUser();
+          if (isMounted && sessionRes?.success && sessionRes.user) {
+            setCurrentUser(sessionRes.user);
+          }
+        } else if (event === 'SIGNED_OUT') {
+          if (isMounted) {
+            setCurrentUser(null);
+            setProducts([]);
+            setMovements([]);
+          }
+        }
+      });
+
+      return () => {
+        isMounted = false;
+        authListener?.subscription?.unsubscribe();
+      };
+    }
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // 2. Load Products and Movements from Cloud whenever user logs in

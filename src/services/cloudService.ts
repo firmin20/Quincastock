@@ -53,7 +53,7 @@ export const cloudService = {
         tables: { profiles: false, products: false, movements: false, pro_codes: false },
         proCodesCount: 0,
         allTablesExist: false,
-        error: 'Variables VITE_SUPABASE_URL ou VITE_SUPABASE_ANON_KEY manquantes.',
+        error: 'Configuration Supabase manquante.',
       };
     }
 
@@ -65,27 +65,68 @@ export const cloudService = {
     };
     let proCodesCount = 0;
 
+    // Helper direct pour vérifier l'existence réelle d'une table auprès de l'API Supabase
+    // Aucune utilisation de localStorage : interroge directement Supabase
+    const checkTable = async (tableName: string): Promise<boolean> => {
+      try {
+        const { error, status } = await supabase.from(tableName).select('id').limit(1);
+
+        // Code 200 ou requête acceptée -> Table existe et accessible
+        if (!error) return true;
+
+        // Erreur 42501 (PostgreSQL permission denied) ou 401/403 (RLS policy active)
+        // prouve de façon catégorique que la table existe dans le schéma PostgREST/PostgreSQL
+        if (
+          error.code === '42501' ||
+          error.message?.toLowerCase().includes('permission denied') ||
+          error.message?.toLowerCase().includes('violates row-level') ||
+          status === 401 ||
+          status === 403
+        ) {
+          return true;
+        }
+
+        // Table absente du schéma PostgREST (PGRST205) ou PostgreSQL (42P01)
+        if (
+          error.code === 'PGRST205' ||
+          error.code === '42P01' ||
+          error.message?.includes('Could not find the table') ||
+          error.message?.includes('does not exist') ||
+          status === 404
+        ) {
+          return false;
+        }
+
+        // Pour toute autre erreur non liée à l'absence de table, la table existe
+        return true;
+      } catch (err) {
+        console.warn(`Erreur lors du test direct de la table ${tableName}:`, err);
+        return false;
+      }
+    };
+
     try {
-      // Test profiles
-      const { error: errProfiles } = await supabase.from('profiles').select('id').limit(1);
-      tablesStatus.profiles = !(errProfiles && errProfiles.code === 'PGRST205');
+      // Test direct et parallèle des 4 tables dans Supabase
+      const [pExists, prExists, mExists, proRes] = await Promise.all([
+        checkTable('profiles'),
+        checkTable('products'),
+        checkTable('movements'),
+        supabase.from('pro_codes').select('id'),
+      ]);
 
-      // Test products
-      const { error: errProducts } = await supabase.from('products').select('id').limit(1);
-      tablesStatus.products = !(errProducts && errProducts.code === 'PGRST205');
+      tablesStatus.profiles = pExists;
+      tablesStatus.products = prExists;
+      tablesStatus.movements = mExists;
 
-      // Test movements
-      const { error: errMovements } = await supabase.from('movements').select('id').limit(1);
-      tablesStatus.movements = !(errMovements && errMovements.code === 'PGRST205');
-
-      // Test pro_codes
-      const { data: proData, error: errProCodes } = await supabase
-        .from('pro_codes')
-        .select('id');
-
-      if (!(errProCodes && errProCodes.code === 'PGRST205')) {
+      if (!proRes.error && Array.isArray(proRes.data)) {
         tablesStatus.pro_codes = true;
-        proCodesCount = proData?.length || 0;
+        proCodesCount = proRes.data.length;
+      } else if (proRes.error) {
+        // pro_codes est accessible en lecture publique ou avec code RLS
+        tablesStatus.pro_codes =
+          proRes.error.code !== 'PGRST205' &&
+          proRes.error.code !== '42P01' &&
+          !proRes.error.message?.includes('Could not find the table');
       }
     } catch (err: any) {
       console.warn('Erreur lors du test des tables Supabase:', err);
