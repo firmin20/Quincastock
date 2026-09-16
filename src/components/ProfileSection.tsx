@@ -18,6 +18,7 @@ import {
 import { UserProfile } from '../types';
 import { formatDateFR, OWNER_CONTACT } from '../utils/formatters';
 import { isSupabaseConfigured } from '../lib/supabase';
+import { checkIsAdmin } from '../config/adminConfig';
 
 interface ProfileSectionProps {
   profile: UserProfile;
@@ -25,6 +26,7 @@ interface ProfileSectionProps {
   isPro: boolean;
   onSignOut: () => void;
   onOpenProModal: () => void;
+  onNavigateAdmin?: () => void;
   onShowToast: (message: string, type: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
@@ -34,10 +36,12 @@ export const ProfileSection: React.FC<ProfileSectionProps> = ({
   isPro,
   onSignOut,
   onOpenProModal,
+  onNavigateAdmin,
   onShowToast,
 }) => {
   const [showSqlGuide, setShowSqlGuide] = useState(false);
   const isLive = isSupabaseConfigured();
+  const isAdmin = checkIsAdmin(profile.userId, profile.email, profile.role);
 
   const handleCopyUserId = () => {
     navigator.clipboard.writeText(profile.userId || profile.id);
@@ -84,6 +88,37 @@ export const ProfileSection: React.FC<ProfileSectionProps> = ({
           Se déconnecter
         </button>
       </div>
+
+      {/* Admin Access Card if owner */}
+      {isAdmin && onNavigateAdmin && (
+        <div className="bg-slate-900 rounded-3xl p-6 text-white border border-slate-800 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center text-white shadow-lg shadow-orange-500/20 shrink-0">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-lg font-black text-white">Espace Administrateur Privé</h2>
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/40">
+                  ADN STUDIO NUMÉRIQUE
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Consultez tous les utilisateurs inscrits, le taux de passage en PRO, les coordonnées et chiffres clés.
+              </p>
+            </div>
+          </div>
+
+          <button
+            id="profile-access-admin-btn"
+            onClick={onNavigateAdmin}
+            className="px-5 py-2.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl font-bold text-xs sm:text-sm transition-colors shrink-0 shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <span>Ouvrir l'Espace Admin</span>
+            <ExternalLink className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Profile Details Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">

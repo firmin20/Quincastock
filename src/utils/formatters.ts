@@ -59,6 +59,8 @@ export function formatDateFR(isoOrDateString: string): string {
   }
 }
 
+export const formatDate = formatDateFR;
+
 /**
  * Check if a timestamp is from today
  */

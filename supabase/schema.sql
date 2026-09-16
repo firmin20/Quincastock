@@ -15,11 +15,16 @@ create table if not exists public.profiles (
   phone text default '',
   email text default '',
   is_pro boolean default false,
+  role text not null default 'user' check (role in ('user', 'admin')),
+  pro_activated_at timestamptz,
+  pro_code_used text,
+  last_activity_at timestamptz default now(),
   created_at timestamptz default now()
 );
 
--- Index pour recherche rapide par user_id
+-- Index pour recherche rapide par user_id et role
 create index if not exists idx_profiles_user_id on public.profiles(user_id);
+create index if not exists idx_profiles_role on public.profiles(role);
 
 -- 3. TABLE PRODUCTS
 create table if not exists public.products (

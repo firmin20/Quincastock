@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">QuincaStock</string>
+    <string name="title_activity_main">QuincaStock</string>
+    <string name="package_name">com.adnstudionumerique.quincastock</string>
+    <string name="custom_url_scheme">com.adnstudionumerique.quincastock</string>
+</resources>

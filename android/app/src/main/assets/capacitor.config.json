@@ -1,0 +1,11 @@
+{
+	"appId": "com.adnstudionumerique.quincastock",
+	"appName": "QuincaStock",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	},
+	"android": {
+		"allowMixedContent": true
+	}
+}

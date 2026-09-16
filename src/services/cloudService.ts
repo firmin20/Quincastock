@@ -1,7 +1,8 @@
 import { supabase, isSupabaseConfigured, getSupabaseConfig } from '../lib/supabase';
-import { Product, Movement, UserProfile } from '../types';
+import { Product, Movement, UserProfile, AdminClient, AdminActivationRecord, AdminActivityEvent, AdminDashboardStats } from '../types';
 import { VALID_PRO_CODES } from '../utils/formatters';
 import { getSupabaseProjectRef } from '../lib/schemaSql';
+import { ADMIN_CONFIG, checkIsAdmin } from '../config/adminConfig';
 
 export interface AuthResponse {
   success: boolean;
@@ -301,6 +302,12 @@ export const cloudService = {
           .eq('user_id', data.user.id)
           .maybeSingle();
 
+        const userEmail = profileData?.email || data.user.email || email;
+        const isAdmin =
+          profileData?.role === 'admin' ||
+          (ADMIN_CONFIG.ADMIN_USER_ID && data.user.id.toLowerCase() === ADMIN_CONFIG.ADMIN_USER_ID.toLowerCase()) ||
+          (userEmail && ADMIN_CONFIG.ADMIN_EMAIL && userEmail.toLowerCase() === ADMIN_CONFIG.ADMIN_EMAIL.toLowerCase());
+
         const profile: UserProfile = {
           id: profileData?.id || data.user.id,
           userId: data.user.id,
@@ -313,10 +320,17 @@ export const cloudService = {
             data.user.user_metadata?.owner_name ||
             'Responsable',
           phone: profileData?.phone || data.user.user_metadata?.phone || '',
-          email: profileData?.email || data.user.email || email,
+          email: userEmail,
           isPro: Boolean(profileData?.is_pro),
+          role: isAdmin ? 'admin' : (profileData?.role || 'user'),
+          proActivatedAt: profileData?.pro_activated_at || null,
+          proCodeUsed: profileData?.pro_code_used || null,
+          lastActivityAt: profileData?.last_activity_at || new Date().toISOString(),
           createdAt: profileData?.created_at || new Date().toISOString(),
         };
+
+        // Enregistrer la dernière activité de manière transparente
+        this.recordActivity(data.user.id);
 
         return {
           success: true,
@@ -361,6 +375,12 @@ export const cloudService = {
           .eq('user_id', user.id)
           .maybeSingle();
 
+        const userEmail = profileData?.email || user.email || '';
+        const isAdmin =
+          profileData?.role === 'admin' ||
+          (ADMIN_CONFIG.ADMIN_USER_ID && user.id.toLowerCase() === ADMIN_CONFIG.ADMIN_USER_ID.toLowerCase()) ||
+          (userEmail && ADMIN_CONFIG.ADMIN_EMAIL && userEmail.toLowerCase() === ADMIN_CONFIG.ADMIN_EMAIL.toLowerCase());
+
         const profile: UserProfile = {
           id: profileData?.id || user.id,
           userId: user.id,
@@ -373,10 +393,17 @@ export const cloudService = {
             user.user_metadata?.owner_name ||
             'Responsable',
           phone: profileData?.phone || user.user_metadata?.phone || '',
-          email: profileData?.email || user.email || '',
+          email: userEmail,
           isPro: Boolean(profileData?.is_pro),
+          role: isAdmin ? 'admin' : (profileData?.role || 'user'),
+          proActivatedAt: profileData?.pro_activated_at || null,
+          proCodeUsed: profileData?.pro_code_used || null,
+          lastActivityAt: profileData?.last_activity_at || new Date().toISOString(),
           createdAt: profileData?.created_at || new Date().toISOString(),
         };
+
+        // Enregistrer la dernière activité
+        this.recordActivity(user.id);
 
         return {
           success: true,
@@ -664,7 +691,7 @@ export const cloudService = {
         // Check if user is already PRO
         const { data: profileData } = await supabase
           .from('profiles')
-          .select('is_pro')
+          .select('is_pro, business_name, owner_name, phone, email')
           .eq('user_id', userId)
           .maybeSingle();
 
@@ -719,11 +746,32 @@ export const cloudService = {
           };
         }
 
-        // Update profile to PRO
+        // Update profile to PRO with activation date and code used
+        const nowIso = new Date().toISOString();
         await supabase
           .from('profiles')
-          .update({ is_pro: true })
+          .update({
+            is_pro: true,
+            pro_activated_at: nowIso,
+            pro_code_used: cleanCode,
+            last_activity_at: nowIso,
+          })
           .eq('user_id', userId);
+
+        // Record in pro_activations table
+        try {
+          await supabase.from('pro_activations').insert({
+            user_id: userId,
+            business_name: profileData?.business_name || '',
+            owner_name: profileData?.owner_name || '',
+            phone: profileData?.phone || '',
+            email: profileData?.email || '',
+            code: cleanCode,
+            activated_at: nowIso,
+          });
+        } catch (actErr) {
+          console.warn('Note insertion pro_activations:', actErr);
+        }
 
         return {
           success: true,
@@ -744,6 +792,498 @@ export const cloudService = {
       status: 'ERROR',
       message: 'Supabase n\'est pas connecté.',
     };
+  },
+
+  // ==========================================
+  // SUIVI DE L'ACTIVITÉ UTILISATEUR
+  // ==========================================
+
+  async recordActivity(userId: string): Promise<void> {
+    if (!userId || !isSupabaseConfigured() || !supabase) return;
+    try {
+      await supabase
+        .from('profiles')
+        .update({ last_activity_at: new Date().toISOString() })
+        .eq('user_id', userId);
+    } catch {
+      // Non-bloquant
+    }
+  },
+
+  // ==========================================
+  // ESPACE ADMINISTRATEUR (ADN STUDIO NUMÉRIQUE)
+  // ==========================================
+
+  async fetchAdminDashboardStats(): Promise<{
+    stats: AdminDashboardStats;
+    error?: string;
+    needsSqlMigration?: boolean;
+  }> {
+    const defaultStats: AdminDashboardStats = {
+      totalUsers: 0,
+      freeUsers: 0,
+      proUsers: 0,
+      conversionRate: 0,
+      totalProducts: 0,
+      activeQuincailleries: 0,
+      totalActivations: 0,
+      estimatedRevenue: 0,
+      newUsersThisWeek: 0,
+    };
+
+    if (!isSupabaseConfigured() || !supabase) {
+      return { stats: defaultStats, error: 'Supabase n\'est pas connecté.' };
+    }
+
+    try {
+      // 1. Tenter la fonction RPC PostgreSQL si installée
+      try {
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('get_admin_overview');
+        if (!rpcErr && rpcData && typeof rpcData === 'object') {
+          const stats: AdminDashboardStats = {
+            totalUsers: Number(rpcData.total_users) || 0,
+            freeUsers: Number(rpcData.free_users) || 0,
+            proUsers: Number(rpcData.pro_users) || 0,
+            conversionRate: Number(rpcData.conversion_rate) || 0,
+            totalProducts: Number(rpcData.total_products) || 0,
+            activeQuincailleries: Number(rpcData.active_quincailleries) || 0,
+            totalActivations: Number(rpcData.total_activations) || 0,
+            estimatedRevenue: Number(rpcData.estimated_revenue) || 0,
+            newUsersThisWeek: Number(rpcData.new_users_this_week) || 0,
+          };
+          return { stats };
+        }
+      } catch {
+        // En cas d'absence de la RPC, requêtage direct
+      }
+
+      // 2. Requêtage direct des tables avec les permissions admin
+      const [profilesRes, productsRes, movementsRes, proCodesRes, activationsRes] = await Promise.all([
+        supabase.from('profiles').select('*'),
+        supabase.from('products').select('id, user_id, unit_price, quantity'),
+        supabase.from('movements').select('id, user_id, type'),
+        supabase.from('pro_codes').select('*'),
+        supabase.from('pro_activations').select('*').order('activated_at', { ascending: false }),
+      ]);
+
+      if (profilesRes.error) {
+        if (profilesRes.error.code === '42501' || profilesRes.error.message.includes('permission denied')) {
+          return {
+            stats: defaultStats,
+            needsSqlMigration: true,
+            error: 'Les permissions Administrateur Supabase ne sont pas encore appliquées dans votre base. Exécutez le script SQL fourni dans votre éditeur Supabase.',
+          };
+        }
+      }
+
+      const profiles = profilesRes.data || [];
+      const products = productsRes.data || [];
+      const movements = movementsRes.data || [];
+      const proCodes = proCodesRes.data || [];
+      const proActivations = activationsRes.data || [];
+
+      const totalUsers = profiles.length;
+      const proUsers = profiles.filter((p) => p.is_pro).length;
+      const freeUsers = Math.max(0, totalUsers - proUsers);
+      const conversionRate = totalUsers > 0 ? Number(((proUsers / totalUsers) * 100).toFixed(1)) : 0;
+      const totalProducts = products.length;
+
+      // Quincailleries actives : ayant au moins 1 produit ou 1 mouvement
+      const activeUserSet = new Set<string>();
+      products.forEach((p) => p.user_id && activeUserSet.add(p.user_id));
+      movements.forEach((m) => m.user_id && activeUserSet.add(m.user_id));
+      const activeQuincailleries = activeUserSet.size;
+
+      // Activations totales
+      const usedCodesCount = proCodes.filter((c) => c.is_used).length;
+      const totalActivations = Math.max(usedCodesCount, proActivations.length, proUsers);
+      const estimatedRevenue = proUsers * ADMIN_CONFIG.PRO_PRICE_FCFA;
+
+      // Nouveaux inscrits ces 7 derniers jours
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const newUsersThisWeek = profiles.filter((p) => p.created_at && p.created_at >= sevenDaysAgo).length;
+
+      return {
+        stats: {
+          totalUsers,
+          freeUsers,
+          proUsers,
+          conversionRate,
+          totalProducts,
+          activeQuincailleries,
+          totalActivations,
+          estimatedRevenue,
+          newUsersThisWeek,
+        },
+      };
+    } catch (err: any) {
+      console.error('Erreur fetchAdminDashboardStats:', err);
+      return {
+        stats: defaultStats,
+        error: err?.message || 'Erreur lors de la récupération des statistiques.',
+      };
+    }
+  },
+
+  async fetchAdminClients(): Promise<{
+    clients: AdminClient[];
+    error?: string;
+    needsSqlMigration?: boolean;
+  }> {
+    if (!isSupabaseConfigured() || !supabase) {
+      return { clients: [], error: 'Supabase n\'est pas connecté.' };
+    }
+
+    try {
+      const [profilesRes, productsRes, movementsRes, proCodesRes] = await Promise.all([
+        supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+        supabase.from('products').select('id, user_id, unit_price, quantity'),
+        supabase.from('movements').select('id, user_id, type, quantity'),
+        supabase.from('pro_codes').select('*'),
+      ]);
+
+      if (profilesRes.error) {
+        if (profilesRes.error.code === '42501' || profilesRes.error.message.includes('permission denied')) {
+          return {
+            clients: [],
+            needsSqlMigration: true,
+            error: 'Permissions Supabase insuffisantes. Exécutez le script SQL Administrateur dans Supabase.',
+          };
+        }
+        return { clients: [], error: profilesRes.error.message };
+      }
+
+      const profiles = profilesRes.data || [];
+      const products = productsRes.data || [];
+      const movements = movementsRes.data || [];
+      const proCodes = proCodesRes.data || [];
+
+      // Carte des codes PRO utilisés
+      const userToCodeMap = new Map<string, { code: string; usedAt?: string }>();
+      proCodes.forEach((c) => {
+        if (c.is_used && c.used_by) {
+          userToCodeMap.set(c.used_by, { code: c.code, usedAt: c.used_at });
+        }
+      });
+
+      const clients: AdminClient[] = profiles.map((p) => {
+        const userProducts = products.filter((pr) => pr.user_id === p.user_id);
+        const userMovements = movements.filter((m) => m.user_id === p.user_id);
+
+        const productCount = userProducts.length;
+        const totalStockValue = userProducts.reduce(
+          (sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.unit_price) || 0),
+          0
+        );
+        const entryCount = userMovements.filter((m) => m.type === 'ACHAT').length;
+        const saleCount = userMovements.filter((m) => m.type === 'VENTE').length;
+
+        const codeInfo = userToCodeMap.get(p.user_id);
+
+        return {
+          id: p.id,
+          userId: p.user_id,
+          businessName: p.business_name || 'Ma Quincaillerie',
+          ownerName: p.owner_name || 'Responsable',
+          phone: p.phone || '',
+          email: p.email || '',
+          isPro: Boolean(p.is_pro),
+          role: (p.role as 'user' | 'admin') || (p.email === ADMIN_CONFIG.ADMIN_EMAIL ? 'admin' : 'user'),
+          createdAt: p.created_at || new Date().toISOString(),
+          proActivatedAt: p.pro_activated_at || codeInfo?.usedAt || null,
+          proCodeUsed: p.pro_code_used || codeInfo?.code || null,
+          lastActivityAt: p.last_activity_at || null,
+          productCount,
+          totalStockValue,
+          entryCount,
+          saleCount,
+        };
+      });
+
+      return { clients };
+    } catch (err: any) {
+      return { clients: [], error: err?.message || 'Erreur lors du chargement des clients.' };
+    }
+  },
+
+  async fetchAdminActivations(): Promise<{
+    activations: AdminActivationRecord[];
+    error?: string;
+  }> {
+    if (!isSupabaseConfigured() || !supabase) {
+      return { activations: [], error: 'Supabase n\'est pas connecté.' };
+    }
+
+    try {
+      // 1. Table pro_activations
+      const { data: actData } = await supabase
+        .from('pro_activations')
+        .select('*')
+        .order('activated_at', { ascending: false });
+
+      if (actData && actData.length > 0) {
+        const activations: AdminActivationRecord[] = actData.map((row) => ({
+          id: row.id,
+          userId: row.user_id,
+          businessName: row.business_name,
+          ownerName: row.owner_name,
+          phone: row.phone,
+          email: row.email,
+          code: row.code,
+          activatedAt: row.activated_at,
+          createdAt: row.created_at,
+          status: 'Activé',
+        }));
+        return { activations };
+      }
+
+      // 2. Fallback: pro_codes où is_used = true combiné avec profiles
+      const [codesRes, profilesRes] = await Promise.all([
+        supabase.from('pro_codes').select('*').eq('is_used', true).order('used_at', { ascending: false }),
+        supabase.from('profiles').select('*'),
+      ]);
+
+      const usedCodes = codesRes.data || [];
+      const profiles = profilesRes.data || [];
+      const profileMap = new Map(profiles.map((p) => [p.user_id, p]));
+
+      const activations: AdminActivationRecord[] = usedCodes.map((c) => {
+        const p = c.used_by ? profileMap.get(c.used_by) : null;
+        return {
+          id: c.id,
+          userId: c.used_by,
+          businessName: p?.business_name || 'Quincaillerie',
+          ownerName: p?.owner_name || 'Client',
+          phone: p?.phone || '',
+          email: p?.email || '',
+          code: c.code,
+          activatedAt: c.used_at || c.created_at,
+          createdAt: c.created_at,
+          status: 'Activé',
+        };
+      });
+
+      return { activations };
+    } catch (err: any) {
+      return { activations: [], error: err?.message || 'Erreur chargement des activations.' };
+    }
+  },
+
+  async fetchAdminActivity(): Promise<{
+    events: AdminActivityEvent[];
+    error?: string;
+  }> {
+    if (!isSupabaseConfigured() || !supabase) {
+      return { events: [], error: 'Supabase n\'est pas connecté.' };
+    }
+
+    try {
+      const [profilesRes, movementsRes, activationsRes] = await Promise.all([
+        supabase.from('profiles').select('*').order('created_at', { ascending: false }).limit(20),
+        supabase.from('movements').select('*').order('created_at', { ascending: false }).limit(30),
+        supabase.from('pro_codes').select('*').eq('is_used', true).order('used_at', { ascending: false }).limit(15),
+      ]);
+
+      const profiles = profilesRes.data || [];
+      const movements = movementsRes.data || [];
+      const activations = activationsRes.data || [];
+      const profileMap = new Map(profiles.map((p) => [p.user_id, p]));
+
+      const events: AdminActivityEvent[] = [];
+
+      // 1. Inscriptions
+      profiles.forEach((p) => {
+        if (p.created_at) {
+          events.push({
+            id: `signup-${p.id}`,
+            type: 'INSCRIPTION',
+            title: `Nouvelle inscription : ${p.owner_name || 'Un marchand'}`,
+            description: `${p.business_name || 'Quincaillerie'} s'est inscrit avec l'email ${p.email || 'non renseigné'}.`,
+            timestamp: p.created_at,
+            userName: p.owner_name,
+            businessName: p.business_name,
+          });
+        }
+      });
+
+      // 2. Activations PRO
+      activations.forEach((a) => {
+        const p = a.used_by ? profileMap.get(a.used_by) : null;
+        const time = a.used_at || a.created_at;
+        if (time) {
+          events.push({
+            id: `pro-${a.id}`,
+            type: 'ACTIVATION_PRO',
+            title: `Activation PRO : ${p?.business_name || 'Quincaillerie'}`,
+            description: `${p?.owner_name || 'Le responsable'} est passé en version PRO avec le code ${a.code}.`,
+            timestamp: time,
+            userName: p?.owner_name,
+            businessName: p?.business_name,
+          });
+        }
+      });
+
+      // 3. Mouvements de stock
+      movements.forEach((m) => {
+        const p = m.user_id ? profileMap.get(m.user_id) : null;
+        if (m.type === 'VENTE') {
+          events.push({
+            id: `mov-${m.id}`,
+            type: 'VENTE',
+            title: `Vente : ${m.quantity}x ${m.product_name}`,
+            description: `${p?.business_name || 'Une quincaillerie'} a enregistré une vente (Stock restant : ${m.stock_after}).`,
+            timestamp: m.created_at,
+            userName: p?.owner_name,
+            businessName: p?.business_name,
+          });
+        } else {
+          events.push({
+            id: `mov-${m.id}`,
+            type: 'ENTREE_STOCK',
+            title: `Entrée de stock : +${m.quantity} ${m.product_name}`,
+            description: `${p?.business_name || 'Une quincaillerie'} a approvisionné son stock.`,
+            timestamp: m.created_at,
+            userName: p?.owner_name,
+            businessName: p?.business_name,
+          });
+        }
+      });
+
+      // Tri chronologique décroissant (le plus récent en premier)
+      events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      return { events: events.slice(0, 40) };
+    } catch (err: any) {
+      return { events: [], error: err?.message || 'Erreur récupération activité.' };
+    }
+  },
+
+  async fetchClientDetail(userId: string): Promise<{
+    client: AdminClient | null;
+    products: Product[];
+    movements: Movement[];
+    error?: string;
+  }> {
+    if (!userId || !isSupabaseConfigured() || !supabase) {
+      return { client: null, products: [], movements: [], error: 'Paramètres invalides.' };
+    }
+
+    try {
+      const [profileRes, productsRes, movementsRes, proCodeRes] = await Promise.all([
+        supabase.from('profiles').select('*').eq('user_id', userId).maybeSingle(),
+        supabase.from('products').select('*').eq('user_id', userId).order('name', { ascending: true }),
+        supabase.from('movements').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        supabase.from('pro_codes').select('*').eq('used_by', userId).maybeSingle(),
+      ]);
+
+      if (profileRes.error) {
+        return { client: null, products: [], movements: [], error: profileRes.error.message };
+      }
+
+      const p = profileRes.data;
+      if (!p) {
+        return { client: null, products: [], movements: [], error: 'Client introuvable.' };
+      }
+
+      const rawProducts = productsRes.data || [];
+      const rawMovements = movementsRes.data || [];
+
+      const products: Product[] = rawProducts.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        name: row.name,
+        category: row.category,
+        unitPrice: Number(row.unit_price) || 0,
+        quantity: Number(row.quantity) || 0,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+
+      const movements: Movement[] = rawMovements.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        timestamp: row.created_at,
+        type: row.type as 'ACHAT' | 'VENTE',
+        productName: row.product_name,
+        productId: row.product_id,
+        quantity: Number(row.quantity) || 0,
+        stockAfter: Number(row.stock_after) || 0,
+        unitPrice: Number(row.unit_price) || 0,
+      }));
+
+      const totalStockValue = products.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+      const entryCount = movements.filter((m) => m.type === 'ACHAT').length;
+      const saleCount = movements.filter((m) => m.type === 'VENTE').length;
+
+      const client: AdminClient = {
+        id: p.id,
+        userId: p.user_id,
+        businessName: p.business_name || 'Ma Quincaillerie',
+        ownerName: p.owner_name || 'Responsable',
+        phone: p.phone || '',
+        email: p.email || '',
+        isPro: Boolean(p.is_pro),
+        role: (p.role as 'user' | 'admin') || 'user',
+        createdAt: p.created_at || new Date().toISOString(),
+        proActivatedAt: p.pro_activated_at || proCodeRes.data?.used_at || null,
+        proCodeUsed: p.pro_code_used || proCodeRes.data?.code || null,
+        lastActivityAt: p.last_activity_at || null,
+        productCount: products.length,
+        totalStockValue,
+        entryCount,
+        saleCount,
+      };
+
+      return { client, products, movements };
+    } catch (err: any) {
+      return { client: null, products: [], movements: [], error: err?.message };
+    }
+  },
+
+  exportClientsToCsv(clients: AdminClient[], onlyPro: boolean = false): void {
+    const filtered = onlyPro ? clients.filter((c) => c.isPro) : clients;
+
+    const headers = [
+      'Quincaillerie',
+      'Responsable',
+      'Téléphone',
+      'Email',
+      'Statut',
+      'Date inscription',
+      'Date activation PRO',
+      'Code PRO',
+      'Nb Produits',
+      'Valeur Stock (FCFA)',
+      'Dernière activité',
+    ];
+
+    const rows = filtered.map((c) => [
+      `"${(c.businessName || '').replace(/"/g, '""')}"`,
+      `"${(c.ownerName || '').replace(/"/g, '""')}"`,
+      `"${(c.phone || '').replace(/"/g, '""')}"`,
+      `"${(c.email || '').replace(/"/g, '""')}"`,
+      `"${c.isPro ? 'PRO' : 'GRATUIT'}"`,
+      `"${c.createdAt ? new Date(c.createdAt).toLocaleDateString('fr-FR') : ''}"`,
+      `"${c.proActivatedAt ? new Date(c.proActivatedAt).toLocaleDateString('fr-FR') : ''}"`,
+      `"${c.proCodeUsed || ''}"`,
+      `"${c.productCount ?? 0}"`,
+      `"${c.totalStockValue ?? 0}"`,
+      `"${c.lastActivityAt ? new Date(c.lastActivityAt).toLocaleDateString('fr-FR') : ''}"`,
+    ]);
+
+    const csvContent = '\uFEFF' + [headers.join(';'), ...rows.map((r) => r.join(';'))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute(
+      'download',
+      `QuincaStock_${onlyPro ? 'Clients_PRO' : 'Tous_Clients'}_${new Date().toISOString().slice(0, 10)}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   },
 
   // ==========================================

@@ -242,3 +242,152 @@ export function getSupabaseProjectRef(url: string): string {
     return '';
   }
 }
+
+export const ADMIN_MIGRATION_SQL_SCRIPT = `-- ==========================================================
+-- ADN STUDIO NUMÉRIQUE — MIGRATION ESPACE ADMINISTRATEUR QUINCASTOCK
+-- À exécuter dans votre Supabase SQL Editor
+-- (Dashboard Supabase -> SQL Editor -> New Query -> Run)
+-- ==========================================================
+
+-- 1. ÉVOLUTION DE LA TABLE PROFILES
+alter table public.profiles add column if not exists role text not null default 'user';
+alter table public.profiles add column if not exists pro_activated_at timestamptz;
+alter table public.profiles add column if not exists pro_code_used text;
+alter table public.profiles add column if not exists last_activity_at timestamptz default now();
+
+create index if not exists idx_profiles_role on public.profiles(role);
+
+-- 2. TABLE D'HISTORIQUE DES ACTIVATIONS PRO
+create table if not exists public.pro_activations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  business_name text not null default '',
+  owner_name text not null default '',
+  phone text default '',
+  email text default '',
+  code text not null,
+  activated_at timestamptz default now(),
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_pro_activations_user_id on public.pro_activations(user_id);
+create index if not exists idx_pro_activations_activated_at on public.pro_activations(activated_at desc);
+
+alter table public.pro_activations enable row level security;
+
+-- 3. FONCTION DE VÉRIFICATION DU STATUT ADMINISTRATEUR
+create or replace function public.is_admin()
+returns boolean
+language sql
+security definer
+stable
+as $$
+  select exists (
+    select 1 from public.profiles 
+    where user_id = auth.uid() 
+      and (role = 'admin' or email = 'firmintela7@gmail.com')
+  );
+$$;
+
+grant execute on function public.is_admin to authenticated, anon;
+
+-- 4. POLITIQUES RLS SUR PROFILES (Isolation stricte des utilisateurs normaux, lecture globale pour l'admin)
+drop policy if exists "Les utilisateurs peuvent voir leur profil" on public.profiles;
+create policy "Les utilisateurs peuvent voir leur profil" 
+  on public.profiles for select 
+  using (auth.uid() = user_id or public.is_admin());
+
+-- 5. POLITIQUES RLS SUR PRODUCTS (Isolation stricte des utilisateurs normaux, consultation globale pour l'admin)
+drop policy if exists "Les utilisateurs voient uniquement leurs produits" on public.products;
+create policy "Les utilisateurs voient uniquement leurs produits" 
+  on public.products for select 
+  using (auth.uid() = user_id or public.is_admin());
+
+-- 6. POLITIQUES RLS SUR MOVEMENTS (Isolation stricte des utilisateurs normaux, consultation globale pour l'admin)
+drop policy if exists "Les utilisateurs voient uniquement leurs mouvements" on public.movements;
+create policy "Les utilisateurs voient uniquement leurs mouvements" 
+  on public.movements for select 
+  using (auth.uid() = user_id or public.is_admin());
+
+-- 7. POLITIQUES RLS SUR PRO_ACTIVATIONS
+drop policy if exists "Lecture des activations par admin" on public.pro_activations;
+create policy "Lecture des activations par admin" 
+  on public.pro_activations for select 
+  using (public.is_admin() or auth.uid() = user_id);
+
+drop policy if exists "Insertion des activations par authentifie" on public.pro_activations;
+create policy "Insertion des activations par authentifie" 
+  on public.pro_activations for insert 
+  with check (auth.uid() = user_id or public.is_admin());
+
+-- 8. FONCTION ATOMIQUE D'ACTIVATION PRO AVEC HISTORIQUE
+create or replace function public.activate_pro_code(p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid;
+  v_clean_code text;
+  v_is_already_pro boolean;
+  v_code_record record;
+  v_user_profile record;
+begin
+  v_user_id := auth.uid();
+  if v_user_id is null then
+    return jsonb_build_object('success', false, 'status', 'UNAUTHENTICATED', 'message', 'Vous devez être connecté.');
+  end if;
+
+  select * into v_user_profile from public.profiles where user_id = v_user_id;
+  if v_user_profile.is_pro is true then
+    return jsonb_build_object('success', false, 'status', 'ALREADY_PRO', 'message', '⭐ Votre compte QuincaStock PRO est déjà activé.');
+  end if;
+
+  v_clean_code := upper(trim(p_code));
+
+  select * into v_code_record from public.pro_codes where code = v_clean_code;
+  if v_code_record.id is null then
+    return jsonb_build_object('success', false, 'status', 'INVALID_CODE', 'message', '❌ Code PRO invalide.');
+  end if;
+
+  if v_code_record.is_used is true then
+    return jsonb_build_object('success', false, 'status', 'ALREADY_USED', 'message', '❌ Ce code PRO a déjà été utilisé.');
+  end if;
+
+  update public.pro_codes
+  set is_used = true,
+      used_by = v_user_id,
+      used_at = now()
+  where id = v_code_record.id and is_used = false;
+
+  update public.profiles
+  set is_pro = true,
+      pro_activated_at = now(),
+      pro_code_used = v_clean_code,
+      last_activity_at = now()
+  where user_id = v_user_id;
+
+  insert into public.pro_activations (
+    user_id, business_name, owner_name, phone, email, code, activated_at
+  ) values (
+    v_user_id,
+    coalesce(v_user_profile.business_name, 'Ma Quincaillerie'),
+    coalesce(v_user_profile.owner_name, 'Responsable'),
+    coalesce(v_user_profile.phone, ''),
+    coalesce(v_user_profile.email, ''),
+    v_clean_code,
+    now()
+  );
+
+  return jsonb_build_object('success', true, 'status', 'SUCCESS', 'message', '🎉 Félicitations ! Votre compte QuincaStock PRO est maintenant activé.');
+end;
+$$;
+
+grant execute on function public.activate_pro_code to authenticated;
+
+-- 9. DÉFINIR AUTOMATIQUEMENT VOTRE COMPTE COMME ADMINISTRATEUR
+update public.profiles
+set role = 'admin'
+where email = 'firmintela7@gmail.com';
+`;

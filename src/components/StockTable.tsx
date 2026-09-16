@@ -10,7 +10,8 @@ import {
   AlertTriangle, 
   XCircle,
   Filter,
-  ArrowUpDown
+  ArrowUpDown,
+  Printer
 } from 'lucide-react';
 import { Product, CATEGORIES, Category } from '../types';
 import { formatFCFA } from '../utils/formatters';
@@ -82,6 +83,14 @@ export const StockTable: React.FC<StockTableProps> = ({
     }
   };
 
+  const handleDirectPrint = () => {
+    try {
+      window.print();
+    } catch {
+      handleExportPDF();
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Header & Export Buttons */}
@@ -97,33 +106,44 @@ export const StockTable: React.FC<StockTableProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Direct Print */}
+          <button
+            id="btn-print-direct"
+            onClick={handleDirectPrint}
+            className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-gray-900 hover:bg-gray-800 text-white shadow-xs transition-colors cursor-pointer min-h-[40px]"
+            title="Imprimer directement via l'imprimante"
+          >
+            <Printer className="w-4 h-4 mr-1.5 text-orange-400" />
+            Imprimer
+          </button>
+
           {/* Export PDF */}
           <button
             id="btn-export-pdf"
             onClick={handleExportPDF}
-            className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-gray-800 hover:bg-gray-700 text-white shadow-xs transition-colors cursor-pointer"
-            title="Imprimer l'inventaire en PDF"
+            className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-gray-800 hover:bg-gray-700 text-white shadow-xs transition-colors cursor-pointer min-h-[40px]"
+            title="Télécharger la fiche d'inventaire en PDF"
           >
-            <FileText className="w-4 h-4 mr-2 text-orange-400" />
-            🖨️ Imprimer Inventaire PDF
+            <FileText className="w-4 h-4 mr-1.5 text-orange-400" />
+            Fiche PDF
           </button>
 
           {/* Export Excel CSV */}
           <button
             id="btn-export-csv"
             onClick={handleExportCSV}
-            className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
+            className="inline-flex items-center px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-emerald-700 hover:bg-emerald-600 text-white shadow-xs transition-colors cursor-pointer min-h-[40px]"
             title="Exporter en fichier Excel compatible (CSV)"
           >
-            <FileSpreadsheet className="w-4 h-4 mr-2" />
-            📊 Exporter Excel (CSV)
+            <FileSpreadsheet className="w-4 h-4 mr-1.5" />
+            Excel (CSV)
           </button>
 
           {/* Add Article Button */}
           <button
             id="btn-add-article"
             onClick={onOpenEntree}
-            className="inline-flex items-center px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-orange-600 hover:bg-orange-500 text-white shadow-xs transition-colors cursor-pointer"
+            className="inline-flex items-center px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-orange-600 hover:bg-orange-500 text-white shadow-xs transition-colors cursor-pointer min-h-[40px]"
           >
             <Plus className="w-4 h-4 mr-1.5" />
             + Ajouter au stock
@@ -263,7 +283,101 @@ export const StockTable: React.FC<StockTableProps> = ({
         </div>
       ) : (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
+          {/* Mobile Cards View (Smartphones < 640px) */}
+          <div className="block sm:hidden divide-y divide-gray-200">
+            {filteredProducts.map((product) => {
+              const isLow = product.quantity > 0 && product.quantity <= 5;
+              const isOutOfStock = product.quantity === 0;
+              const totalValue = product.unitPrice * product.quantity;
+
+              return (
+                <div
+                  key={`mobile-${product.id}`}
+                  className={`p-4 space-y-3 ${
+                    isLow
+                      ? 'bg-rose-50/40'
+                      : isOutOfStock
+                      ? 'bg-gray-100/50'
+                      : 'bg-white'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-bold text-gray-900 leading-snug">
+                        {product.name}
+                      </h3>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-gray-100 text-gray-700 mt-1">
+                        {product.category}
+                      </span>
+                    </div>
+
+                    <div>
+                      {isOutOfStock ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-black bg-red-600 text-white shadow-xs">
+                          ❌ RUPTURE
+                        </span>
+                      ) : isLow ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-black bg-amber-500 text-white shadow-xs">
+                          ⚠️ FAIBLE
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-black bg-emerald-600 text-white shadow-xs">
+                          EN STOCK
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 bg-gray-50/80 p-2.5 rounded-xl border border-gray-100 text-center text-xs">
+                    <div>
+                      <span className="text-gray-500 block text-[10px]">Prix Unit.</span>
+                      <strong className="text-gray-900 font-bold">{formatFCFA(product.unitPrice)}</strong>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 block text-[10px]">Quantité</span>
+                      <span
+                        className={`inline-block px-1.5 py-0.5 rounded font-black text-xs ${
+                          isOutOfStock
+                            ? 'bg-red-100 text-red-700'
+                            : isLow
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-emerald-100 text-emerald-800'
+                        }`}
+                      >
+                        {product.quantity}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 block text-[10px]">Valeur</span>
+                      <strong className="text-gray-900 font-bold">{formatFCFA(totalValue)}</strong>
+                    </div>
+                  </div>
+
+                  {/* Actions mobile touch friendly */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      onClick={() => onEditPrice(product)}
+                      className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-xl text-xs font-bold text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 active:bg-gray-100 transition-colors shadow-2xs min-h-[40px]"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 mr-1 text-gray-500" />
+                      Modifier Prix
+                    </button>
+
+                    <button
+                      onClick={() => onDeleteProduct(product)}
+                      className="inline-flex items-center justify-center px-3 py-2 rounded-xl text-xs font-bold text-red-600 bg-white border border-red-200 hover:bg-red-50 active:bg-red-100 transition-colors shadow-2xs min-h-[40px]"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 mr-1" />
+                      Supprimer
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop & Tablet Table (>= 640px) */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left border-collapse text-sm">
               <thead>
                 <tr className="bg-gray-900 text-white text-xs uppercase tracking-wider font-bold">

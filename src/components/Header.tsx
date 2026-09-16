@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Wrench, Phone, MessageSquare, Mail, ShieldCheck, Sparkles, X, User, LogOut } from 'lucide-react';
 import { OWNER_CONTACT } from '../utils/formatters';
 import { UserProfile } from '../types';
+import { checkIsAdmin } from '../config/adminConfig';
 
 interface HeaderProps {
   isPro: boolean;
@@ -10,6 +11,7 @@ interface HeaderProps {
   onOpenPro: () => void;
   onNavigateContact: () => void;
   onNavigateProfile?: () => void;
+  onNavigateAdmin?: () => void;
   onSignOut?: () => void;
 }
 
@@ -20,9 +22,11 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenPro,
   onNavigateContact,
   onNavigateProfile,
+  onNavigateAdmin,
   onSignOut,
 }) => {
   const [showContactModal, setShowContactModal] = useState(false);
+  const isAdmin = checkIsAdmin(userProfile?.userId, userProfile?.email, userProfile?.role);
 
   return (
     <header className="bg-gray-900 text-white border-b border-gray-800 sticky top-0 z-40 shadow-md">
@@ -86,6 +90,19 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <User className="w-3.5 h-3.5 sm:mr-1.5 text-orange-400" />
                 <span className="hidden sm:inline">Mon compte</span>
+              </button>
+            )}
+
+            {/* Admin Portal Button */}
+            {onNavigateAdmin && isAdmin && (
+              <button
+                id="header-admin-btn"
+                onClick={onNavigateAdmin}
+                className="inline-flex items-center px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-bold bg-slate-800 hover:bg-orange-500 text-orange-400 hover:text-white border border-orange-500/40 transition-colors shadow-sm cursor-pointer"
+                title="Espace Administrateur ADN STUDIO NUMÉRIQUE"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 sm:mr-1.5 text-orange-400" />
+                <span className="hidden sm:inline">ADN Admin</span>
               </button>
             )}
 

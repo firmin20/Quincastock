@@ -19,8 +19,10 @@ import { ModalSortieStock } from './components/ModalSortieStock';
 import { ModalModifierPrix } from './components/ModalModifierPrix';
 import { ModalConfirmDelete } from './components/ModalConfirmDelete';
 import { ModalProUpgrade } from './components/ModalProUpgrade';
+import { AdminDashboard } from './components/AdminDashboard';
 import { ToastContainer } from './components/ToastContainer';
 import { Wrench } from 'lucide-react';
+import { App as CapApp } from '@capacitor/app';
 
 export default function App() {
   // Authentication & Session State
@@ -58,6 +60,71 @@ export default function App() {
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  // Listen to #admin hash or /admin path in URL
+  useEffect(() => {
+    const handleUrlCheck = () => {
+      const isHashAdmin = window.location.hash === '#admin' || window.location.hash === '#/admin';
+      const isPathAdmin = window.location.pathname === '/admin';
+      if (isHashAdmin || isPathAdmin) {
+        setActiveTab('admin');
+      }
+    };
+
+    handleUrlCheck();
+    window.addEventListener('hashchange', handleUrlCheck);
+    window.addEventListener('popstate', handleUrlCheck);
+    return () => {
+      window.removeEventListener('hashchange', handleUrlCheck);
+      window.removeEventListener('popstate', handleUrlCheck);
+    };
+  }, []);
+
+  const handleNavigateAdmin = useCallback(() => {
+    setActiveTab('admin');
+    window.location.hash = 'admin';
+  }, []);
+
+  const handleExitAdmin = useCallback(() => {
+    setActiveTab('dashboard');
+    if (window.location.hash.includes('admin')) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
+
+  // Android Hardware / Gesture Back Button handling via Capacitor
+  useEffect(() => {
+    let listenerHandle: { remove: () => Promise<void> } | null = null;
+    try {
+      CapApp.addListener('backButton', () => {
+        if (isEntreeModalOpen) {
+          setIsEntreeModalOpen(false);
+        } else if (isSortieModalOpen) {
+          setIsSortieModalOpen(false);
+        } else if (editingPriceProduct) {
+          setEditingPriceProduct(null);
+        } else if (deletingProduct) {
+          setDeletingProduct(null);
+        } else if (isProModalOpen) {
+          setIsProModalOpen(false);
+        } else if (activeTab !== 'dashboard') {
+          setActiveTab('dashboard');
+        } else {
+          CapApp.exitApp();
+        }
+      }).then((handle) => {
+        listenerHandle = handle;
+      });
+    } catch {
+      // Running on standard browser, no-op
+    }
+
+    return () => {
+      if (listenerHandle && typeof listenerHandle.remove === 'function') {
+        listenerHandle.remove();
+      }
+    };
+  }, [isEntreeModalOpen, isSortieModalOpen, editingPriceProduct, deletingProduct, isProModalOpen, activeTab]);
 
   // 1. Check Session on initial mount & listen to auth state changes across tabs/browsers
   useEffect(() => {
@@ -197,6 +264,13 @@ export default function App() {
       updatedProducts = [...products];
       updatedProducts[existingIndex] = targetProduct;
     } else {
+      // New distinct product - Check 5 products limit for free users
+      if (!isPro && products.length >= 5) {
+        setIsProModalOpen(true);
+        addToast('⭐ Limite de 5 produits atteinte (version gratuite). Passez à la version PRO pour ajouter d\'autres articles !', 'warning');
+        return;
+      }
+
       // New product
       targetProduct = {
         id: 'prod-' + Date.now(),
@@ -381,6 +455,22 @@ export default function App() {
   }
 
   // ----------------------------------------------------
+  // Admin View (Protected - ADN STUDIO NUMÉRIQUE)
+  // ----------------------------------------------------
+  if (activeTab === 'admin') {
+    return (
+      <div className="min-h-screen bg-slate-950">
+        <AdminDashboard
+          currentUser={currentUser}
+          onExit={handleExitAdmin}
+          onShowToast={addToast}
+        />
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      </div>
+    );
+  }
+
+  // ----------------------------------------------------
   // Authenticated Application
   // ----------------------------------------------------
   return (
@@ -393,6 +483,7 @@ export default function App() {
         onOpenPro={() => setIsProModalOpen(true)}
         onNavigateContact={() => setActiveTab('contact')}
         onNavigateProfile={() => setActiveTab('profile')}
+        onNavigateAdmin={handleNavigateAdmin}
         onSignOut={handleSignOut}
       />
 
@@ -456,6 +547,7 @@ export default function App() {
             isPro={isPro}
             onSignOut={handleSignOut}
             onOpenProModal={() => setIsProModalOpen(true)}
+            onNavigateAdmin={handleNavigateAdmin}
             onShowToast={addToast}
           />
         )}

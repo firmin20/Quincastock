@@ -137,7 +137,53 @@ export const MovementsTable: React.FC<MovementsTableProps> = ({ movements }) => 
         </div>
       ) : (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
+          {/* Mobile Cards View (Smartphones < 640px) */}
+          <div className="block sm:hidden divide-y divide-gray-200">
+            {filteredMovements.map((m) => {
+              const isAchat = m.type === 'ACHAT';
+
+              return (
+                <div key={`mobile-${m.id}`} className="p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center space-x-1.5 text-xs text-gray-500 font-medium">
+                      <Calendar className="w-3.5 h-3.5 text-gray-400" />
+                      <span>{formatDateFR(m.timestamp)}</span>
+                    </div>
+
+                    {isAchat ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-black bg-emerald-100 text-emerald-800">
+                        ACHAT
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-black bg-rose-100 text-rose-800">
+                        VENTE
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-baseline justify-between gap-2">
+                    <h3 className="text-sm font-bold text-gray-900 leading-snug">
+                      {m.productName}
+                    </h3>
+                    <span
+                      className={`text-sm font-black whitespace-nowrap px-2 py-0.5 rounded ${
+                        isAchat ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+                      }`}
+                    >
+                      {isAchat ? `+${m.quantity}` : `-${m.quantity}`}
+                    </span>
+                  </div>
+
+                  <div className="text-right text-xs text-gray-600 font-medium pt-1 border-t border-gray-100">
+                    Stock après : <strong className="text-gray-900 font-bold">{m.stockAfter}</strong>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop & Tablet Table (>= 640px) */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left border-collapse text-sm">
               <thead>
                 <tr className="bg-gray-900 text-white text-xs uppercase tracking-wider font-bold">
