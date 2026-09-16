@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Keystore & Android release signing files
+*.jks
+*.keystore
+signing.properties
+keystore.properties
