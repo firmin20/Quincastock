@@ -1,0 +1,138 @@
+name: Build Android Release AAB
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-release-bundle:
+    name: Build QuincaStock Signed Release AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Required Secrets
+        run: |
+          MISSING_SECRETS=""
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            MISSING_SECRETS="$MISSING_SECRETS KEYSTORE_BASE64"
+          fi
+          if [ -z "${{ secrets.KEYSTORE_PASSWORD }}" ]; then
+            MISSING_SECRETS="$MISSING_SECRETS KEYSTORE_PASSWORD"
+          fi
+          if [ -z "${{ secrets.KEY_ALIAS }}" ]; then
+            MISSING_SECRETS="$MISSING_SECRETS KEY_ALIAS"
+          fi
+          if [ -z "${{ secrets.KEY_PASSWORD }}" ]; then
+            MISSING_SECRETS="$MISSING_SECRETS KEY_PASSWORD"
+          fi
+
+          if [ -n "$MISSING_SECRETS" ]; then
+            echo "::error::Secrets manquants détectés :$MISSING_SECRETS"
+            echo "Veuillez configurer ces secrets dans Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "Tous les secrets requis (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) sont configurés."
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Sync Capacitor Android
+        run: npx cap sync android
+
+      - name: Set up Java JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Configure Android SDK and Accept Licenses
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "platforms;android-35" "platforms;android-34" "build-tools;36.0.0" "build-tools;35.0.0" "platform-tools"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+
+      - name: Reconstitute Keystore in Temporary Runner Storage
+        env:
+          RAW_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PWD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ALIAS_NAME: ${{ secrets.KEY_ALIAS }}
+          KEY_PWD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Masquer les valeurs sensibles dans tous les logs
+          echo "::add-mask::$RAW_KEYSTORE_BASE64"
+          echo "::add-mask::$KEYSTORE_PWD"
+          echo "::add-mask::$ALIAS_NAME"
+          echo "::add-mask::$KEY_PWD"
+
+          # Emplacement temporaire du runner GitHub (totalement en dehors du dépôt Git)
+          TEMP_KEYSTORE_DIR="$RUNNER_TEMP/secure_signing"
+          mkdir -p "$TEMP_KEYSTORE_DIR"
+          KEYSTORE_PATH="$TEMP_KEYSTORE_DIR/quincastock-release.keystore"
+
+          # Décodage du fichier keystore
+          echo "$RAW_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+
+          # Validation de l'intégrité du fichier keystore généré
+          if [ ! -s "$KEYSTORE_PATH" ]; then
+            echo "::error::Le décodage du Keystore a produit un fichier vide. Vérifiez KEYSTORE_BASE64."
+            exit 1
+          fi
+
+          echo "KEYSTORE_FILE=$KEYSTORE_PATH" >> $GITHUB_ENV
+          echo "Keystore reconstitué avec succès dans le stockage temporaire sécurisé."
+
+      - name: Build Android Release App Bundle
+        working-directory: ./android
+        env:
+          KEYSTORE_FILE: ${{ env.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew bundleRelease --stacktrace
+
+      - name: Verify Signed AAB Output
+        run: |
+          AAB_FILE="android/app/build/outputs/bundle/release/app-release.aab"
+          if [ ! -f "$AAB_FILE" ]; then
+            echo "::error::Le fichier Android App Bundle n'a pas été généré : $AAB_FILE"
+            exit 1
+          fi
+
+          AAB_SIZE=$(ls -lh "$AAB_FILE" | awk '{print $5}')
+          AAB_BYTES=$(wc -c < "$AAB_FILE")
+
+          echo "=================================================="
+          echo "🎉 QUINCASTOCK - RELEASE BUNDLE GÉNÉRÉ AVEC SUCCÈS"
+          echo "=================================================="
+          echo "Application ID : com.adnstudionumerique.quincastock"
+          echo "Version Name   : 1.0.0"
+          echo "Version Code   : 1"
+          echo "Chemin du AAB  : $AAB_FILE"
+          echo "Taille du AAB  : $AAB_SIZE ($AAB_BYTES octets)"
+          echo "Signature      : RELEASE SIGNED (via Keystore)"
+          echo "=================================================="
+
+      - name: Upload Release AAB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuincaStock-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 14
