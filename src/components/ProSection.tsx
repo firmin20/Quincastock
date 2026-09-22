@@ -10,7 +10,8 @@ import {
   CheckCircle2, 
   AlertCircle,
   HelpCircle,
-  Zap
+  Zap,
+  ExternalLink
 } from 'lucide-react';
 import { OWNER_CONTACT } from '../utils/formatters';
 import { cloudService } from '../services/cloudService';
@@ -236,15 +237,37 @@ export const ProSection: React.FC<ProSectionProps> = ({
                 Votre licence PRO est active
               </div>
             ) : (
-              <a
-                href={OWNER_CONTACT.whatsappProUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full py-3.5 px-4 rounded-xl bg-orange-600 hover:bg-orange-500 text-white font-extrabold text-center text-sm shadow-md transition-colors flex items-center justify-center gap-2"
-              >
-                <MessageSquare className="w-4 h-4" />
-                📲 Payer / Contacter sur WhatsApp
-              </a>
+              <div className="space-y-3">
+                <a
+                  href={OWNER_CONTACT.saspayProUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  id="btn-saspay-pro-section"
+                  className="w-full py-3.5 px-4 rounded-xl bg-orange-600 hover:bg-orange-500 text-white font-black text-center text-sm sm:text-base shadow-lg hover:shadow-orange-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span>PASSER À PRO — 15 000 FCFA</span>
+                  <ExternalLink className="w-4 h-4 flex-shrink-0" />
+                </a>
+
+                <p className="text-[11px] sm:text-xs text-center text-gray-500 font-medium">
+                  Paiement sécurisé par SASPay — Mobile Money / carte selon les moyens disponibles.
+                </p>
+
+                <div className="pt-2 border-t border-gray-100">
+                  <p className="text-xs text-gray-600 font-medium text-center mb-2">
+                    Après votre paiement, contactez-nous sur WhatsApp pour recevoir votre activation PRO.
+                  </p>
+                  <a
+                    href={OWNER_CONTACT.whatsappAfterSasPayUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-center text-xs shadow-xs transition-colors flex items-center justify-center gap-2"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Envoyer confirmation sur WhatsApp</span>
+                  </a>
+                </div>
+              </div>
             )}
           </div>
         </div>

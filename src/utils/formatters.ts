@@ -3,11 +3,14 @@ export const OWNER_CONTACT = {
   whatsappRaw: '696019303',
   whatsappUrl: 'https://wa.me/237696019303',
   whatsappProUrl: 'https://wa.me/237696019303?text=Bonjour,%20je%20veux%20QuincaStock%20PRO',
+  whatsappAfterSasPayUrl: 'https://wa.me/237696019303?text=Bonjour%2C%20je%20viens%20de%20payer%20QuincaStock%20PRO%20(15%20000%20FCFA).%20Voici%20mon%20nom%20et%20mon%20num%C3%A9ro%20utilis%C3%A9%20pour%20le%20paiement%20SASPay%20%3A',
   phoneDisplay: '+237 670 566 705',
   phoneRaw: '670566705',
   phoneUrl: 'tel:+237670566705',
   email: 'firmintela7@gmail.com',
   emailUrl: 'mailto:firmintela7@gmail.com',
+  saspayProUrl: 'https://link.saspay.me/t_ygcmv937c',
+  proPriceFCFA: 15000,
 };
 
 export const VALID_PRO_CODES = [
